@@ -2,6 +2,7 @@ mod archive;
 mod cli;
 mod compress;
 mod config;
+mod dedup;
 mod dirty;
 mod encryption;
 mod error;
@@ -13,7 +14,7 @@ mod sync;
 mod usb;
 
 use clap::Parser;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use cli::{Cli, Commands};
 use config::Config;
@@ -36,8 +37,8 @@ fn main() -> anyhow::Result<()> {
             println!("GUI not yet implemented. Use CLI commands instead.");
             println!("Run `gitka --help` for available commands.");
         }
-        Commands::Init { source, target, username, token, gitflare_url, interactive } => {
-            cmd_init(source, target, username.as_deref(), token.as_deref(), gitflare_url.as_deref(), *interactive)?;
+        Commands::Init { source, target, username, token, gitflare_url, volume_size, dedup, interactive } => {
+            cmd_init(source, target, username.as_deref(), token.as_deref(), gitflare_url.as_deref(), *volume_size, *dedup, *interactive)?;
             return Ok(());
         }
         _ => {}
@@ -112,7 +113,7 @@ fn load_config(cli: &Cli) -> Result<(Config, PathBuf)> {
 }
 
 /// Initialize a new Gitka backup
-fn cmd_init(source: &str, target: &PathBuf, username: Option<&str>, token: Option<&str>, gitflare_url: Option<&str>, interactive: bool) -> Result<()> {
+fn cmd_init(source: &str, target: &PathBuf, username: Option<&str>, token: Option<&str>, gitflare_url: Option<&str>, volume_size: Option<u64>, dedup: Option<bool>, interactive: bool) -> Result<()> {
     if interactive {
         return cmd_init_interactive(target);
     }
@@ -129,6 +130,7 @@ fn cmd_init(source: &str, target: &PathBuf, username: Option<&str>, token: Optio
     std::fs::create_dir_all(target.join("recovery-data"))?;
     std::fs::create_dir_all(target.join(".gitka").join("logs"))?;
     std::fs::create_dir_all(target.join(".gitka").join("repos"))?;
+    std::fs::create_dir_all(target.join(".gitka").join("dedup-store"))?;
 
     // Create config with source settings
     let mut config = Config::default();
@@ -156,6 +158,18 @@ fn cmd_init(source: &str, target: &PathBuf, username: Option<&str>, token: Optio
         _ => {
             return Err(GitkaError::Config(format!("Unknown source type: {}", source)));
         }
+    }
+
+    // Apply volume splitting
+    if let Some(size) = volume_size {
+        config.compression.volume_splitting = Some(config::VolumeSplitting { size_mb: size });
+        println!("  Volume splitting: {} MB per part", size);
+    }
+
+    // Apply dedup setting
+    if let Some(dedup_on) = dedup {
+        config.compression.dedup = dedup_on;
+        println!("  Cross-repo dedup: {}", if dedup_on { "enabled" } else { "disabled" });
     }
 
     let config_path = target.join(".gitka").join("gitka.toml");
@@ -186,6 +200,7 @@ fn cmd_init_interactive(target: &PathBuf) -> Result<()> {
     std::fs::create_dir_all(target.join("recovery-data"))?;
     std::fs::create_dir_all(target.join(".gitka").join("logs"))?;
     std::fs::create_dir_all(target.join(".gitka").join("repos"))?;
+    std::fs::create_dir_all(target.join(".gitka").join("dedup-store"))?;
 
     let mut config = Config::default();
     config.target.path = target.clone();
@@ -258,6 +273,33 @@ fn cmd_init_interactive(target: &PathBuf) -> Result<()> {
         "high" => config::CompressionTier::High,
         _ => config::CompressionTier::Auto,
     };
+
+    // Volume splitting
+    println!("\n📦 Volume Splitting");
+    println!("-----------------------");
+    println!("Split archives into fixed-size parts (e.g., 700 for CD, 4096 for FAT32).");
+    print!("Volume split size in MB (0 = off) [0]: ");
+    io::stdout().flush()?;
+    let mut volume_size = String::new();
+    io::stdin().read_line(&mut volume_size)?;
+    let volume_size: u64 = volume_size.trim().parse().unwrap_or(0);
+    if volume_size > 0 {
+        config.compression.volume_splitting = Some(config::VolumeSplitting { size_mb: volume_size });
+        println!("  ✓ Volume splitting: {} MB per part", volume_size);
+    }
+
+    // Cross-repo dedup
+    println!("\n📦 Cross-Repo Deduplication");
+    println!("-----------------------");
+    println!("Share common blobs across repos to save space (e.g., shared libraries).");
+    print!("Enable cross-repo dedup? (y/n) [y]: ");
+    io::stdout().flush()?;
+    let mut dedup_input = String::new();
+    io::stdin().read_line(&mut dedup_input)?;
+    config.compression.dedup = dedup_input.trim().to_lowercase() != "n";
+    if config.compression.dedup {
+        println!("  ✓ Dedup enabled");
+    }
 
     // Feature toggles
     println!("\n🔧 Feature Toggles");
@@ -856,11 +898,15 @@ fn cmd_sync(config: &Config, repos: Option<Vec<String>>) -> Result<()> {
                         state: repo::RepoState::Archived,
                         archive_path: PathBuf::from(format!("{}.gitka.zst", remote_repo.name)),
                         archive_hash: None,
-                        archive_size: 0, // Will be set after compression
+                        archive_size: 0,
+                        volume_count: 1,
+                        archive_parts: Vec::new(),
                         decompressed_size: Some(repo_size),
                         last_synced: None,
                         last_verified: None,
                         extraction_path: None,
+                        dedup_enabled: false,
+                        dedup_bytes_saved: 0,
                     };
 
                     repo_manager.save_meta(&meta)?;
@@ -868,20 +914,53 @@ fn cmd_sync(config: &Config, repos: Option<Vec<String>>) -> Result<()> {
                     // Compress the repo
                     println!("  Compressing...");
                     let archive_path = archive_dir.join(format!("{}.gitka.zst", remote_repo.name));
-                    match compress::compress_directory(&repo_path, &archive_path, &config.compression) {
-                        Ok(archive_size) => {
-                            // Calculate hash
+
+                    // Initialize dedup store if enabled
+                    let mut dedup_store = if config.compression.dedup {
+                        let mut store = dedup::DedupStore::open(config);
+                        store.init().ok();
+                        store.load_index().ok();
+                        Some(store)
+                    } else {
+                        None
+                    };
+
+                    match compress::compress_directory_with_options(&repo_path, &archive_path, &config.compression, dedup_store.as_mut()) {
+                        Ok(result) => {
+                            // Calculate hash of first part
                             let hash = compress::calculate_hash(&archive_path)?;
 
                             // Update metadata with archive info
                             let mut meta = repo_manager.load_meta(&remote_repo.name)?;
-                            meta.archive_size = archive_size;
+                            meta.archive_size = result.total_size;
                             meta.archive_hash = Some(hash);
+                            meta.volume_count = result.volume_count;
+                            meta.archive_parts = result.part_files;
+                            meta.dedup_enabled = config.compression.dedup;
+                            meta.dedup_bytes_saved = result.dedup_bytes_saved;
                             repo_manager.save_meta(&meta)?;
 
-                            println!("  ✓ Cloned and compressed ({:.1} MB archive, {:.1} MB source)",
-                                archive_size as f64 / 1_048_576.0,
-                                repo_size as f64 / 1_048_576.0);
+                            // Save dedup index
+                            if let Some(store) = dedup_store.as_ref() {
+                                store.save_index().ok();
+                            }
+
+                            let dedup_info = if result.dedup_bytes_saved > 0 {
+                                format!(", dedup saved {:.1} MB", result.dedup_bytes_saved as f64 / 1_048_576.0)
+                            } else {
+                                String::new()
+                            };
+                            let volume_info = if result.volume_count > 1 {
+                                format!(", {} parts", result.volume_count)
+                            } else {
+                                String::new()
+                            };
+
+                            println!("  ✓ Cloned and compressed ({:.1} MB archive, {:.1} MB source{}{})",
+                                result.total_size as f64 / 1_048_576.0,
+                                repo_size as f64 / 1_048_576.0,
+                                volume_info,
+                                dedup_info);
 
                             // Encrypt if enabled
                             if config.toggles.encryption {
@@ -1186,7 +1265,36 @@ fn cmd_lock(config: &Config, repo_name: &str) -> Result<()> {
     let archive_path = config.archive_dir().join(format!("{}.gitka.zst", repo_name));
     std::fs::create_dir_all(config.archive_dir())?;
 
-    let new_size = compress::compress_directory(&extraction_path, &archive_path, &config.compression)?;
+    // Initialize dedup store if enabled
+    let mut dedup_store = if config.compression.dedup {
+        let mut store = dedup::DedupStore::open(config);
+        store.init().ok();
+        store.load_index().ok();
+        Some(store)
+    } else {
+        None
+    };
+
+    let compress_result = compress::compress_directory_with_options(&extraction_path, &archive_path, &config.compression, dedup_store.as_mut())?;
+
+    // Save dedup index
+    if let Some(store) = dedup_store.as_ref() {
+        store.save_index().ok();
+    }
+
+    // Clean up old volume parts if the number changed
+    if meta.volume_count > 1 {
+        for i in 2..=meta.volume_count {
+            let old_part = archive_path.parent()
+                .unwrap_or(Path::new("."))
+                .join(format!("{}.{:03}", archive_path.file_name().unwrap_or_default().to_string_lossy(), i));
+            if old_part.exists() && !compress_result.part_files.contains(&old_part.file_name().unwrap_or_default().to_string_lossy().to_string()) {
+                std::fs::remove_file(&old_part).ok();
+            }
+        }
+    }
+
+    let new_size = compress_result.total_size;
     let new_hash = compress::calculate_hash(&archive_path)?;
 
     // Verify before deleting old archive
@@ -1225,6 +1333,10 @@ fn cmd_lock(config: &Config, repo_name: &str) -> Result<()> {
     meta.archive_path = PathBuf::from(format!("{}.gitka.zst", repo_name));
     meta.archive_hash = Some(new_hash);
     meta.archive_size = new_size;
+    meta.volume_count = compress_result.volume_count;
+    meta.archive_parts = compress_result.part_files;
+    meta.dedup_enabled = config.compression.dedup;
+    meta.dedup_bytes_saved = compress_result.dedup_bytes_saved;
     meta.extraction_path = None;
     repo_manager.save_meta(&meta)?;
 
@@ -1235,6 +1347,12 @@ fn cmd_lock(config: &Config, repo_name: &str) -> Result<()> {
 
     println!("✓ Repo locked and recompressed");
     println!("  Archive: {} ({:.1} MB)", archive_path.display(), new_size as f64 / 1_048_576.0);
+    if compress_result.volume_count > 1 {
+        println!("  Volumes: {} parts", compress_result.volume_count);
+    }
+    if compress_result.dedup_bytes_saved > 0 {
+        println!("  Dedup saved: {:.1} MB", compress_result.dedup_bytes_saved as f64 / 1_048_576.0);
+    }
 
     // Show session audit trail
     if !session_summary.is_empty() {
@@ -1523,6 +1641,12 @@ fn cmd_config(config: &mut Config, set: Option<String>, get: Option<String>, con
             "compression.tier" => println!("{:?}", config.compression.tier),
             "compression.dictionary_size_mb" => println!("{}", config.compression.dictionary_size_mb),
             "compression.dedup" => println!("{}", config.compression.dedup),
+            "compression.volume_splitting.size_mb" => {
+                match &config.compression.volume_splitting {
+                    Some(vs) => println!("{}", vs.size_mb),
+                    None => println!("off (not set)"),
+                }
+            }
             "extraction.target" => println!("{:?}", config.extraction.target),
             "toggles.clear_after_lock" => println!("{}", config.toggles.clear_after_lock),
             "toggles.verify_after_sync" => println!("{}", config.toggles.verify_after_sync),
@@ -1546,6 +1670,7 @@ fn cmd_config(config: &mut Config, set: Option<String>, get: Option<String>, con
                 println!("  compression.tier         (auto | low | medium | high)");
                 println!("  compression.dictionary_size_mb");
                 println!("  compression.dedup        (true | false)");
+                println!("  compression.volume_splitting.size_mb (number | off)");
                 println!("  extraction.target        (usb | host)");
                 println!("  toggles.clear_after_lock (true | false)");
                 println!("  toggles.verify_after_sync (true | false)");
@@ -1603,6 +1728,17 @@ fn cmd_config(config: &mut Config, set: Option<String>, get: Option<String>, con
                     "true" => config.compression.dedup = true,
                     "false" => config.compression.dedup = false,
                     _ => { println!("Invalid value. Use: true | false"); return Ok(()); }
+                }
+            }
+            "compression.volume_splitting.size_mb" => {
+                match value {
+                    "off" | "0" => config.compression.volume_splitting = None,
+                    val => {
+                        match val.parse::<u64>() {
+                            Ok(n) if n > 0 => config.compression.volume_splitting = Some(config::VolumeSplitting { size_mb: n }),
+                            _ => { println!("Invalid value. Use: a positive number in MB, or 'off' to disable"); return Ok(()); }
+                        }
+                    }
                 }
             }
             "extraction.target" => {

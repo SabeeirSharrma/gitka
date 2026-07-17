@@ -51,6 +51,14 @@ pub enum Commands {
         #[arg(long)]
         gitflare_url: Option<String>,
 
+        /// Volume split size in MB (e.g., 700 for CD, 4096 for FAT32)
+        #[arg(long)]
+        volume_size: Option<u64>,
+
+        /// Enable/disable cross-repo deduplication
+        #[arg(long)]
+        dedup: Option<bool>,
+
         /// Run interactive setup wizard
         #[arg(short, long)]
         interactive: bool,

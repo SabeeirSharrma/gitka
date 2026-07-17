@@ -28,8 +28,14 @@ pub struct RepoMeta {
     pub archive_path: PathBuf,
     /// SHA256 hash of the archive for integrity verification
     pub archive_hash: Option<String>,
-    /// Size of the archive in bytes
+    /// Size of the archive in bytes (total across all parts)
     pub archive_size: u64,
+    /// Number of volume parts (1 = no splitting)
+    #[serde(default = "default_volume_count")]
+    pub volume_count: u32,
+    /// Names of all archive part files (relative to archive dir)
+    #[serde(default)]
+    pub archive_parts: Vec<String>,
     /// Size of the decompressed repo in bytes
     pub decompressed_size: Option<u64>,
     /// Last sync timestamp
@@ -38,6 +44,16 @@ pub struct RepoMeta {
     pub last_verified: Option<String>,
     /// Extraction path (if extracted)
     pub extraction_path: Option<PathBuf>,
+    /// Whether dedup was used for this archive
+    #[serde(default)]
+    pub dedup_enabled: bool,
+    /// Bytes saved by dedup during last compress
+    #[serde(default)]
+    pub dedup_bytes_saved: u64,
+}
+
+fn default_volume_count() -> u32 {
+    1
 }
 
 impl RepoMeta {

@@ -1,6 +1,6 @@
 [package]
 name = "gitka"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2021"
 authors = ["Sabeeir Sharrma"]
 description = "A Ventoy-inspired tool that creates compressed, physical-media local copies of your GitHub/GitFlare repos"
