@@ -1,0 +1,51 @@
+[package]
+name = "gitka"
+version = "0.1.0"
+edition = "2021"
+authors = ["Sabeeir Sharrma"]
+description = "A Ventoy-inspired tool that creates compressed, physical-media local copies of your GitHub/GitFlare repos"
+license = "MIT OR Apache-2.0"
+
+[[bin]]
+name = "gitka"
+path = "src/main.rs"
+
+[dependencies]
+# CLI parsing
+clap = { version = "4.5", features = ["derive"] }
+
+# Config handling
+serde = { version = "1.0", features = ["derive"] }
+toml = "0.8"
+
+# Compression
+zstd = "0.13"
+
+# Git operations
+git2 = "0.19"
+
+# Error handling
+anyhow = "1.0"
+thiserror = "1.0"
+
+# Utilities
+chrono = { version = "0.4", features = ["serde"] }
+sha2 = "0.10"
+hex = "0.4"
+dirs = "5.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+walkdir = "2.5"
+reqwest = { version = "0.12", features = ["json", "rustls-tls", "blocking"], default-features = false }
+serde_json = "1.0"
+
+[dev-dependencies]
+tempfile = "3.10"
+assert_cmd = "2.0"
+predicates = "3.1"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true

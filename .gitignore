@@ -1,0 +1,5 @@
+/target
+*.gitka.zst
+*.saiarc
+.gitka/
+extract/
