@@ -2,8 +2,11 @@ mod archive;
 mod cli;
 mod compress;
 mod config;
+mod encryption;
 mod error;
+mod recovery;
 mod repo;
+mod serve;
 mod source;
 mod sync;
 mod usb;
@@ -32,15 +35,15 @@ fn main() -> anyhow::Result<()> {
             println!("GUI not yet implemented. Use CLI commands instead.");
             println!("Run `gitka --help` for available commands.");
         }
-        Commands::Init { source, target, username, token, gitflare_url } => {
-            cmd_init(source, target, username.as_deref(), token.as_deref(), gitflare_url.as_deref())?;
+        Commands::Init { source, target, username, token, gitflare_url, interactive } => {
+            cmd_init(source, target, username.as_deref(), token.as_deref(), gitflare_url.as_deref(), *interactive)?;
             return Ok(());
         }
         _ => {}
     }
 
     // Load config for other commands
-    let config = load_config(&cli)?;
+    let (config, config_path) = load_config(&cli)?;
 
     match cli.command {
         Commands::Scan => {
@@ -61,14 +64,15 @@ fn main() -> anyhow::Result<()> {
         Commands::Serve { repo, stop } => {
             cmd_serve(&config, &repo, stop)?;
         }
-        Commands::Verify { repos } => {
-            cmd_verify(&config, repos)?;
+        Commands::Verify { repos, verbose } => {
+            cmd_verify(&config, repos, verbose)?;
         }
         Commands::Repair { repo } => {
             cmd_repair(&config, &repo)?;
         }
         Commands::Config { set, get } => {
-            cmd_config(&config, set, get)?;
+            let mut config = config;
+            cmd_config(&mut config, set, get, &config_path)?;
         }
         _ => unreachable!(),
     }
@@ -77,7 +81,7 @@ fn main() -> anyhow::Result<()> {
 }
 
 /// Load config from file or create default
-fn load_config(cli: &Cli) -> Result<Config> {
+fn load_config(cli: &Cli) -> Result<(Config, PathBuf)> {
     let config_path = if let Some(path) = &cli.config {
         path.clone()
     } else {
@@ -98,11 +102,16 @@ fn load_config(cli: &Cli) -> Result<Config> {
             ))?
     };
 
-    Config::load(&config_path)
+    let config = Config::load(&config_path)?;
+    Ok((config, config_path))
 }
 
 /// Initialize a new Gitka backup
-fn cmd_init(source: &str, target: &PathBuf, username: Option<&str>, token: Option<&str>, gitflare_url: Option<&str>) -> Result<()> {
+fn cmd_init(source: &str, target: &PathBuf, username: Option<&str>, token: Option<&str>, gitflare_url: Option<&str>, interactive: bool) -> Result<()> {
+    if interactive {
+        return cmd_init_interactive(target);
+    }
+
     println!("Initializing Gitka backup...");
     println!("Source: {}", source);
     println!("Target: {}", target.display());
@@ -153,6 +162,123 @@ fn cmd_init(source: &str, target: &PathBuf, username: Option<&str>, token: Optio
     println!("1. Edit {} to configure your sources", config_path.display());
     println!("2. Run `gitka scan` to discover repos");
     println!("3. Run `gitka sync` to clone and back up repos");
+
+    Ok(())
+}
+
+/// Interactive setup wizard
+fn cmd_init_interactive(target: &PathBuf) -> Result<()> {
+    use std::io::{self, Write};
+
+    println!("🚀 Gitka Setup Wizard");
+    println!("=====================\n");
+
+    // Create directory structure
+    std::fs::create_dir_all(target.join("repos").join("archive"))?;
+    std::fs::create_dir_all(target.join("extract"))?;
+    std::fs::create_dir_all(target.join("tools").join("gitflare"))?;
+    std::fs::create_dir_all(target.join("tools").join("recovery"))?;
+    std::fs::create_dir_all(target.join("recovery-data"))?;
+    std::fs::create_dir_all(target.join(".gitka").join("logs"))?;
+    std::fs::create_dir_all(target.join(".gitka").join("repos"))?;
+
+    let mut config = Config::default();
+    config.target.path = target.clone();
+
+    // Source type
+    println!("📦 Source Configuration");
+    println!("-----------------------");
+    print!("Source type (github/gitflare) [github]: ");
+    io::stdout().flush()?;
+    let mut source = String::new();
+    io::stdin().read_line(&mut source)?;
+    let source = source.trim();
+    let source = if source.is_empty() { "github" } else { source };
+
+    match source {
+        "github" => {
+            print!("GitHub username: ");
+            io::stdout().flush()?;
+            let mut username = String::new();
+            io::stdin().read_line(&mut username)?;
+            let username = username.trim().to_string();
+            if !username.is_empty() {
+                config.source.github_username = Some(username);
+            }
+
+            print!("GitHub token (optional, press Enter to skip): ");
+            io::stdout().flush()?;
+            let mut token = String::new();
+            io::stdin().read_line(&mut token)?;
+            let token = token.trim().to_string();
+            if !token.is_empty() {
+                config.source.auth_token = Some(token);
+            }
+        }
+        "gitflare" => {
+            print!("GitFlare URL: ");
+            io::stdout().flush()?;
+            let mut url = String::new();
+            io::stdin().read_line(&mut url)?;
+            let url = url.trim().to_string();
+            if !url.is_empty() {
+                config.source.gitflare_url = Some(url);
+            }
+
+            print!("GitFlare token (optional, press Enter to skip): ");
+            io::stdout().flush()?;
+            let mut token = String::new();
+            io::stdin().read_line(&mut token)?;
+            let token = token.trim().to_string();
+            if !token.is_empty() {
+                config.source.auth_token = Some(token);
+            }
+        }
+        _ => {
+            println!("⚠ Unknown source type: {}. Using github.", source);
+        }
+    }
+
+    // Compression settings
+    println!("\n🗜️  Compression Settings");
+    println!("-----------------------");
+    print!("Compression tier (auto/low/medium/high) [auto]: ");
+    io::stdout().flush()?;
+    let mut tier = String::new();
+    io::stdin().read_line(&mut tier)?;
+    let tier = tier.trim();
+    config.compression.tier = match tier {
+        "low" => config::CompressionTier::Low,
+        "medium" => config::CompressionTier::Medium,
+        "high" => config::CompressionTier::High,
+        _ => config::CompressionTier::Auto,
+    };
+
+    // Feature toggles
+    println!("\n🔧 Feature Toggles");
+    println!("-----------------------");
+    print!("Enable recovery records? (y/n) [n]: ");
+    io::stdout().flush()?;
+    let mut recovery = String::new();
+    io::stdin().read_line(&mut recovery)?;
+    config.toggles.recovery_records = recovery.trim().to_lowercase() == "y";
+
+    print!("Enable encryption? (y/n) [n]: ");
+    io::stdout().flush()?;
+    let mut encryption = String::new();
+    io::stdin().read_line(&mut encryption)?;
+    config.toggles.encryption = encryption.trim().to_lowercase() == "y";
+
+    // Save config
+    let config_path = target.join(".gitka").join("gitka.toml");
+    config.save(&config_path)?;
+
+    println!("\n✅ Setup complete!");
+    println!("✓ Directory structure created at {}", target.display());
+    println!("✓ Config file created at {}", config_path.display());
+    println!("\nNext steps:");
+    println!("1. Run `gitka scan` to discover repos");
+    println!("2. Run `gitka sync` to clone and back up repos");
 
     Ok(())
 }
@@ -356,6 +482,22 @@ fn cmd_sync(config: &Config, repos: Option<Vec<String>>) -> Result<()> {
                                 archive_size as f64 / 1_048_576.0,
                                 repo_size as f64 / 1_048_576.0);
 
+                            // Create recovery records if enabled
+                            if config.toggles.recovery_records && recovery::is_par2_available() {
+                                println!("  Creating recovery records...");
+                                let recovery_dir = config.recovery_dir().join(&remote_repo.name);
+                                match recovery::create_recovery(&archive_path, &recovery_dir, 25) {
+                                    Ok(info) => {
+                                        println!("  ✓ Recovery records created ({:.1} MB, {} blocks)",
+                                            info.recovery_size as f64 / 1_048_576.0,
+                                            info.block_count);
+                                    }
+                                    Err(e) => {
+                                        println!("  ⚠ Recovery record creation failed: {}", e);
+                                    }
+                                }
+                            }
+
                             // Clean up the extracted repo
                             std::fs::remove_dir_all(&repo_path)?;
                         }
@@ -503,14 +645,22 @@ fn cmd_lock(config: &Config, repo_name: &str) -> Result<()> {
 /// Serve a repo via GitFlare
 fn cmd_serve(config: &Config, repo_name: &str, stop: bool) -> Result<()> {
     if stop {
-        println!("Stopping GitFlare server...");
-        // TODO: Implement GitFlare server stop
-        println!("✓ Server stopped");
+        println!("Stopping GitFlare server for {}...", repo_name);
+        match serve::stop(config, repo_name)? {
+            true => println!("✓ Server stopped"),
+            false => println!("  No server running for {}", repo_name),
+        }
     } else {
         println!("Starting GitFlare server for {}...", repo_name);
-        // TODO: Implement GitFlare server start
-        println!("✓ Server started on port {}", config.integrations.gitflare.as_ref().map(|g| g.port).unwrap_or(8080));
-        println!("  Other machines on your LAN can now clone from this repo.");
+        let info = serve::start(config, repo_name)?;
+        println!("✓ Server started on port {}", info.port);
+        println!();
+        println!("  Clone URL (local):   {}", info.clone_url());
+        println!("  Clone URL (LAN):     {}/{}.git", info.lan_url(), repo_name);
+        println!();
+        println!("  Other machines on your LAN can clone with:");
+        println!("    git clone {}/{}.git", info.lan_url(), repo_name);
+        println!();
         println!("  Run `gitka serve {} --stop` to stop.", repo_name);
     }
 
@@ -518,7 +668,7 @@ fn cmd_serve(config: &Config, repo_name: &str, stop: bool) -> Result<()> {
 }
 
 /// Verify archive integrity
-fn cmd_verify(config: &Config, repos: Option<Vec<String>>) -> Result<()> {
+fn cmd_verify(config: &Config, repos: Option<Vec<String>>, verbose: bool) -> Result<()> {
     let repo_manager = repo::RepoManager::new(config.clone());
     let all_repos = repo_manager.list_repos()?;
 
@@ -529,14 +679,116 @@ fn cmd_verify(config: &Config, repos: Option<Vec<String>>) -> Result<()> {
         None => all_repos.iter().collect(),
     };
 
-    println!("Verifying archives...");
+    if repos_to_verify.is_empty() {
+        println!("No repos to verify.");
+        return Ok(());
+    }
 
-    for repo in repos_to_verify {
+    println!("Verifying {} archive(s)...\n", repos_to_verify.len());
+
+    let mut all_ok = true;
+
+    for repo in &repos_to_verify {
         let archive_path = repo.archive_full_path(config);
-        match compress::verify_archive(&archive_path) {
-            Ok(()) => println!("  ✓ {} - OK", repo.name),
-            Err(e) => println!("  ✗ {} - FAILED: {}", repo.name, e),
+        let mut checks = Vec::new();
+
+        // 1. Check archive exists
+        if !archive_path.exists() {
+            println!("✗ {} - archive not found: {}", repo.name, archive_path.display());
+            all_ok = false;
+            continue;
         }
+
+        // 2. Check file size
+        let file_size = std::fs::metadata(&archive_path)
+            .map(|m| m.len())
+            .unwrap_or(0);
+        if file_size == 0 {
+            println!("✗ {} - archive is empty", repo.name);
+            all_ok = false;
+            continue;
+        }
+        checks.push(format!("size: {:.1} MB", file_size as f64 / 1_048_576.0));
+
+        // 3. Check archive header
+        match archive::Archive::open(&archive_path) {
+            Ok(_archive) => checks.push("header: OK".to_string()),
+            Err(e) => {
+                println!("✗ {} - header check failed: {}", repo.name, e);
+                all_ok = false;
+                continue;
+            }
+        }
+
+        // 4. Verify compression integrity
+        match compress::verify_archive(&archive_path) {
+            Ok(()) => checks.push("decompression: OK".to_string()),
+            Err(e) => {
+                println!("✗ {} - decompression failed: {}", repo.name, e);
+                all_ok = false;
+                continue;
+            }
+        }
+
+        // 5. Verify hash if stored
+        if let Some(stored_hash) = &repo.archive_hash {
+            match compress::calculate_hash(&archive_path) {
+                Ok(computed_hash) => {
+                    if &computed_hash == stored_hash {
+                        checks.push("hash: OK".to_string());
+                    } else {
+                        println!("✗ {} - hash mismatch!", repo.name);
+                        println!("  expected: {}", stored_hash);
+                        println!("  computed: {}", computed_hash);
+                        all_ok = false;
+                        continue;
+                    }
+                }
+                Err(e) => {
+                    println!("✗ {} - hash calculation failed: {}", repo.name, e);
+                    all_ok = false;
+                    continue;
+                }
+            }
+        } else {
+            checks.push("hash: not stored".to_string());
+        }
+
+        // 6. Check recovery records availability
+        let recovery_path = config.recovery_dir().join(format!("{}.par2", repo.name));
+        if recovery_path.exists() {
+            checks.push("recovery: available".to_string());
+        } else {
+            checks.push("recovery: none".to_string());
+        }
+
+        // 7. Check permissions (not writable by others)
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if let Ok(meta) = std::fs::metadata(&archive_path) {
+                let mode = meta.permissions().mode();
+                let others_writable = (mode & 0o002) != 0;
+                if others_writable {
+                    checks.push("perms: world-writable (warning)".to_string());
+                } else {
+                    checks.push("perms: OK".to_string());
+                }
+            }
+        }
+
+        println!("✓ {} - {}", repo.name, checks.join(", "));
+        if verbose {
+            println!("  archive: {}", archive_path.display());
+            println!("  hash:    {}", repo.archive_hash.as_deref().unwrap_or("n/a"));
+            println!();
+        }
+    }
+
+    if all_ok {
+        println!("\nAll archives verified successfully.");
+    } else {
+        println!("\nSome archives failed verification.");
     }
 
     Ok(())
@@ -544,37 +796,273 @@ fn cmd_verify(config: &Config, repos: Option<Vec<String>>) -> Result<()> {
 
 /// Repair a corrupted repo
 fn cmd_repair(config: &Config, repo_name: &str) -> Result<()> {
-    println!("Repairing {}...", repo_name);
+    println!("Repairing {}...\n", repo_name);
 
-    // TODO: Implement recovery record usage
-    println!("⚠ Recovery not yet implemented");
-    println!("  If you have recovery records, they are in {}", config.recovery_dir().display());
+    // Check if par2 is available
+    if !recovery::is_par2_available() {
+        println!("✗ par2 not found. Install it:");
+        println!("  sudo apt install par2");
+        println!();
+        println!("Recovery records require par2 to create and repair.");
+        return Ok(());
+    }
+
+    // Get repo metadata
+    let repo_manager = repo::RepoManager::new(config.clone());
+    let meta = repo_manager.load_meta(repo_name)?;
+
+    let archive_path = meta.archive_full_path(config);
+    let recovery_dir = config.recovery_dir().join(repo_name);
+
+    // Check if recovery records exist
+    if !recovery_dir.exists() {
+        println!("✗ No recovery records found for {}", repo_name);
+        println!("  Recovery dir: {}", recovery_dir.display());
+        println!();
+        println!("To create recovery records, run:");
+        println!("  gitka sync --repos {} (with toggles.recovery_records = true)", repo_name);
+        return Ok(());
+    }
+
+    // Verify recovery records first
+    println!("Verifying recovery records...");
+    match recovery::verify_recovery(&recovery_dir) {
+        Ok(true) => println!("  ✓ Recovery records are valid"),
+        Ok(false) => {
+            println!("  ✗ Recovery records are corrupted");
+            println!("  Cannot repair without valid recovery records");
+            return Ok(());
+        }
+        Err(e) => {
+            println!("  ✗ Failed to verify recovery records: {}", e);
+            return Ok(());
+        }
+    }
+
+    // Check if the archive is corrupted
+    println!("\nChecking archive integrity...");
+    let archive_ok = match compress::verify_archive(&archive_path) {
+        Ok(()) => {
+            println!("  ✓ Archive is intact");
+            true
+        }
+        Err(e) => {
+            println!("  ✗ Archive is corrupted: {}", e);
+            false
+        }
+    };
+
+    if archive_ok {
+        println!("\nArchive is not corrupted. No repair needed.");
+        return Ok(());
+    }
+
+    // Attempt repair
+    println!("\nAttempting repair...");
+    match recovery::repair_file(&archive_path, &recovery_dir) {
+        Ok(()) => {
+            println!("  ✓ Repair successful");
+
+            // Verify the repaired file
+            println!("\nVerifying repaired archive...");
+            match compress::verify_archive(&archive_path) {
+                Ok(()) => println!("  ✓ Repaired archive is valid"),
+                Err(e) => {
+                    println!("  ✗ Repaired archive still has issues: {}", e);
+                    println!("  The recovery records may not have enough redundancy.");
+                }
+            }
+        }
+        Err(e) => {
+            println!("  ✗ Repair failed: {}", e);
+            println!();
+            println!("  The recovery records may not have enough redundancy.");
+            println!("  Consider re-syncing the repo from source.");
+        }
+    }
 
     Ok(())
 }
 
 /// View/edit config
-fn cmd_config(config: &Config, set: Option<String>, get: Option<String>) -> Result<()> {
+fn cmd_config(config: &mut Config, set: Option<String>, get: Option<String>, config_path: &std::path::Path) -> Result<()> {
     if let Some(key) = get {
         // Get a config value
         match key.as_str() {
             "source.github_username" => println!("{}", config.source.github_username.as_deref().unwrap_or("not set")),
             "source.gitflare_url" => println!("{}", config.source.gitflare_url.as_deref().unwrap_or("not set")),
+            "source.auth_token" => {
+                if config.source.auth_token.is_some() {
+                    println!("*** (set)");
+                } else {
+                    println!("not set");
+                }
+            }
             "target.path" => println!("{}", config.target.path.display()),
             "target.mode" => println!("{:?}", config.target.mode),
             "compression.backend" => println!("{:?}", config.compression.backend),
             "compression.tier" => println!("{:?}", config.compression.tier),
+            "compression.dictionary_size_mb" => println!("{}", config.compression.dictionary_size_mb),
+            "compression.dedup" => println!("{}", config.compression.dedup),
             "extraction.target" => println!("{:?}", config.extraction.target),
-            _ => println!("Unknown config key: {}", key),
+            "toggles.clear_after_lock" => println!("{}", config.toggles.clear_after_lock),
+            "toggles.verify_after_sync" => println!("{}", config.toggles.verify_after_sync),
+            "toggles.encryption" => println!("{}", config.toggles.encryption),
+            "toggles.recovery_records" => println!("{}", config.toggles.recovery_records),
+            "integrations.gitflare.port" => {
+                println!("{}", config.integrations.gitflare.as_ref().map(|g| g.port).unwrap_or(8080));
+            }
+            "integrations.gitflare.bind_address" => {
+                println!("{}", config.integrations.gitflare.as_ref().map(|g| g.bind_address.as_str()).unwrap_or("0.0.0.0"));
+            }
+            _ => {
+                println!("Unknown config key: {}", key);
+                println!("\nAvailable keys:");
+                println!("  source.github_username");
+                println!("  source.gitflare_url");
+                println!("  source.auth_token");
+                println!("  target.path");
+                println!("  target.mode              (removable | local)");
+                println!("  compression.backend      (zstd)");
+                println!("  compression.tier         (auto | low | medium | high)");
+                println!("  compression.dictionary_size_mb");
+                println!("  compression.dedup        (true | false)");
+                println!("  extraction.target        (usb | host)");
+                println!("  toggles.clear_after_lock (true | false)");
+                println!("  toggles.verify_after_sync (true | false)");
+                println!("  toggles.encryption       (true | false)");
+                println!("  toggles.recovery_records (true | false)");
+                println!("  integrations.gitflare.port");
+                println!("  integrations.gitflare.bind_address");
+            }
         }
-    } else if let Some(_kv) = set {
-        // TODO: Implement config setting
-        println!("⚠ Config editing not yet implemented");
-        println!("  Edit the TOML file directly.");
+    } else if let Some(kv) = set {
+        // Set a config value: key=value format
+        let parts: Vec<&str> = kv.splitn(2, '=').collect();
+        if parts.len() != 2 {
+            println!("Invalid format. Use: key=value");
+            return Ok(());
+        }
+        let key = parts[0].trim();
+        let value = parts[1].trim();
+
+        match key {
+            "source.github_username" => config.source.github_username = Some(value.to_string()),
+            "source.gitflare_url" => config.source.gitflare_url = Some(value.to_string()),
+            "source.auth_token" => config.source.auth_token = Some(value.to_string()),
+            "target.path" => config.target.path = std::path::PathBuf::from(value),
+            "target.mode" => {
+                match value {
+                    "removable" => config.target.mode = config::TargetMode::Removable,
+                    "local" => config.target.mode = config::TargetMode::Local,
+                    _ => { println!("Invalid mode. Use: removable | local"); return Ok(()); }
+                }
+            }
+            "compression.backend" => {
+                match value {
+                    "zstd" => config.compression.backend = config::CompressionBackend::Zstd,
+                    _ => { println!("Invalid backend. Use: zstd"); return Ok(()); }
+                }
+            }
+            "compression.tier" => {
+                match value {
+                    "auto" => config.compression.tier = config::CompressionTier::Auto,
+                    "low" => config.compression.tier = config::CompressionTier::Low,
+                    "medium" => config.compression.tier = config::CompressionTier::Medium,
+                    "high" => config.compression.tier = config::CompressionTier::High,
+                    _ => { println!("Invalid tier. Use: auto | low | medium | high"); return Ok(()); }
+                }
+            }
+            "compression.dictionary_size_mb" => {
+                match value.parse::<u32>() {
+                    Ok(n) => config.compression.dictionary_size_mb = n,
+                    Err(_) => { println!("Invalid number: {}", value); return Ok(()); }
+                }
+            }
+            "compression.dedup" => {
+                match value {
+                    "true" => config.compression.dedup = true,
+                    "false" => config.compression.dedup = false,
+                    _ => { println!("Invalid value. Use: true | false"); return Ok(()); }
+                }
+            }
+            "extraction.target" => {
+                match value {
+                    "usb" => config.extraction.target = config::ExtractionTarget::Usb,
+                    "host" => config.extraction.target = config::ExtractionTarget::Host,
+                    _ => { println!("Invalid target. Use: usb | host"); return Ok(()); }
+                }
+            }
+            "toggles.clear_after_lock" => {
+                match value {
+                    "true" => config.toggles.clear_after_lock = true,
+                    "false" => config.toggles.clear_after_lock = false,
+                    _ => { println!("Invalid value. Use: true | false"); return Ok(()); }
+                }
+            }
+            "toggles.verify_after_sync" => {
+                match value {
+                    "true" => config.toggles.verify_after_sync = true,
+                    "false" => config.toggles.verify_after_sync = false,
+                    _ => { println!("Invalid value. Use: true | false"); return Ok(()); }
+                }
+            }
+            "toggles.encryption" => {
+                match value {
+                    "true" => config.toggles.encryption = true,
+                    "false" => config.toggles.encryption = false,
+                    _ => { println!("Invalid value. Use: true | false"); return Ok(()); }
+                }
+            }
+            "toggles.recovery_records" => {
+                match value {
+                    "true" => config.toggles.recovery_records = true,
+                    "false" => config.toggles.recovery_records = false,
+                    _ => { println!("Invalid value. Use: true | false"); return Ok(()); }
+                }
+            }
+            "integrations.gitflare.port" => {
+                match value.parse::<u16>() {
+                    Ok(n) => {
+                        if config.integrations.gitflare.is_none() {
+                            config.integrations.gitflare = Some(config::GitFlareConfig {
+                                port: n,
+                                bind_address: "0.0.0.0".to_string(),
+                            });
+                        } else {
+                            config.integrations.gitflare.as_mut().unwrap().port = n;
+                        }
+                    }
+                    Err(_) => { println!("Invalid port number: {}", value); return Ok(()); }
+                }
+            }
+            "integrations.gitflare.bind_address" => {
+                if config.integrations.gitflare.is_none() {
+                    config.integrations.gitflare = Some(config::GitFlareConfig {
+                        port: 8080,
+                        bind_address: value.to_string(),
+                    });
+                } else {
+                    config.integrations.gitflare.as_mut().unwrap().bind_address = value.to_string();
+                }
+            }
+            _ => {
+                println!("Unknown config key: {}", key);
+                println!("Run `gitka config --get unknown_key` to see available keys.");
+                return Ok(());
+            }
+        }
+
+        // Save config
+        config.save(config_path)?;
+        println!("✓ {} = {}", key, value);
     } else {
         // Show full config
         println!("Current configuration:");
         println!("{}", toml::to_string_pretty(config).unwrap());
+        println!("\nConfig file: {}", config_path.display());
+        println!("\nUse `gitka config --set key=value` to edit.");
+        println!("Use `gitka config --get key` to query.");
     }
 
     Ok(())

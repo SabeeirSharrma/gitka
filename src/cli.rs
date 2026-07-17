@@ -50,6 +50,10 @@ pub enum Commands {
         /// GitFlare instance URL (for GitFlare source)
         #[arg(long)]
         gitflare_url: Option<String>,
+
+        /// Run interactive setup wizard
+        #[arg(short, long)]
+        interactive: bool,
     },
 
     /// Re-scan sources and target, show size report + budget check
@@ -96,6 +100,10 @@ pub enum Commands {
         /// Verify specific repos only (default: all)
         #[arg(short, long)]
         repos: Option<Vec<String>>,
+
+        /// Show detailed output
+        #[arg(short, long)]
+        verbose: bool,
     },
 
     /// Use recovery record to fix a corrupted repo

@@ -72,12 +72,26 @@ pub fn compress_directory(
     archive_path: &Path,
     config: &CompressionConfig,
 ) -> Result<u64> {
+    use indicatif::{ProgressBar, ProgressStyle};
     use std::fs::File;
     use std::io::{Read, Write};
     use zstd::stream::write::Encoder;
 
     let tier = config.tier.clone();
     let level = level_for_tier(&tier);
+
+    // Count files for progress bar
+    let file_count = walkdir::WalkDir::new(source_dir)
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_file())
+        .count() as u64;
+
+    let pb = ProgressBar::new(file_count);
+    pb.set_style(ProgressStyle::default_bar()
+        .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} files ({eta})")
+        .unwrap()
+        .progress_chars("#>-"));
 
     // Create the archive file
     let file = File::create(archive_path)
@@ -115,8 +129,12 @@ pub fn compress_directory(
                 .map_err(|e| GitkaError::Compression(format!("Write error: {}", e)))?;
             encoder.write_all(&buffer)
                 .map_err(|e| GitkaError::Compression(format!("Write error: {}", e)))?;
+
+            pb.inc(1);
         }
     }
+
+    pb.finish_with_message("done");
 
     // Finish encoding
     encoder.finish()
@@ -135,6 +153,7 @@ pub fn decompress_directory(
     archive_path: &Path,
     target_dir: &Path,
 ) -> Result<u64> {
+    use indicatif::{ProgressBar, ProgressStyle};
     use std::fs::File;
     use std::io::Read;
     use zstd::stream::read::Decoder;
@@ -147,6 +166,17 @@ pub fn decompress_directory(
 
     let mut total_bytes = 0u64;
 
+    // Get archive size for progress bar
+    let archive_size = std::fs::metadata(archive_path)
+        .map(|m| m.len())
+        .unwrap_or(0);
+
+    let pb = ProgressBar::new(archive_size);
+    pb.set_style(ProgressStyle::default_bar()
+        .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({bytes_per_sec})")
+        .unwrap()
+        .progress_chars("#>-"));
+
     // Read and extract files
     loop {
         // Read file path length
@@ -157,6 +187,7 @@ pub fn decompress_directory(
             Err(e) => return Err(GitkaError::Extraction(format!("Read error: {}", e))),
         }
         let path_len = u32::from_le_bytes(len_buf) as usize;
+        pb.inc(4); // path length bytes
 
         // Read file path
         let mut path_buf = vec![0u8; path_len];
@@ -164,17 +195,20 @@ pub fn decompress_directory(
             .map_err(|e| GitkaError::Extraction(format!("Read error: {}", e)))?;
         let relative_path = String::from_utf8(path_buf)
             .map_err(|e| GitkaError::Extraction(format!("Invalid UTF-8: {}", e)))?;
+        pb.inc(path_len as u64); // path bytes
 
         // Read content length
         let mut content_len_buf = [0u8; 8];
         decoder.read_exact(&mut content_len_buf)
             .map_err(|e| GitkaError::Extraction(format!("Read error: {}", e)))?;
         let content_len = u64::from_le_bytes(content_len_buf);
+        pb.inc(8); // content length bytes
 
         // Read content
         let mut content = vec![0u8; content_len as usize];
         decoder.read_exact(&mut content)
             .map_err(|e| GitkaError::Extraction(format!("Read error: {}", e)))?;
+        pb.inc(content_len); // content bytes
 
         // Write to target
         let target_path = target_dir.join(&relative_path);
@@ -187,6 +221,8 @@ pub fn decompress_directory(
 
         total_bytes += content_len;
     }
+
+    pb.finish_with_message("done");
 
     Ok(total_bytes)
 }

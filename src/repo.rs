@@ -71,6 +71,15 @@ impl RepoMeta {
             }
         }
     }
+
+    /// Get the full path to the extraction directory
+    pub fn extraction_full_path(&self, config: &Config) -> PathBuf {
+        if let Some(ref path) = self.extraction_path {
+            path.clone()
+        } else {
+            self.extraction_target(config)
+        }
+    }
 }
 
 /// Repository state manager
