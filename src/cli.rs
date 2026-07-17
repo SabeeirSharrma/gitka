@@ -122,13 +122,47 @@ pub enum Commands {
         #[arg(short, long)]
         get: Option<String>,
     },
+
+    /// Wipe a removable drive and set up Gitka from scratch
+    ///
+    /// WARNING: This will ERASE ALL DATA on the target device.
+    /// Only works on removable drives (USB, external HDD/SSD).
+    Wipe {
+        /// Target device path to wipe (e.g., /dev/sdb1, /Volumes/MYUSB)
+        #[arg(short, long)]
+        target: PathBuf,
+
+        /// Source type: github or gitflare
+        #[arg(long, default_value = "github")]
+        source: String,
+
+        /// GitHub username or organization (for GitHub source)
+        #[arg(long)]
+        username: Option<String>,
+
+        /// Authentication token (GitHub PAT or GitFlare token)
+        #[arg(long)]
+        token: Option<String>,
+
+        /// GitFlare instance URL (for GitFlare source)
+        #[arg(long)]
+        gitflare_url: Option<String>,
+
+        /// Filesystem type: ext4, vfat (default: auto-detect based on size)
+        #[arg(long)]
+        filesystem: Option<String>,
+
+        /// Skip confirmation prompt (DANGEROUS — use in scripts only)
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 impl Commands {
     /// Check if this command requires an initialized Gitka drive
     pub fn requires_init(&self) -> bool {
         match self {
-            Commands::Init { .. } | Commands::Gui => false,
+            Commands::Init { .. } | Commands::Gui | Commands::Wipe { .. } => false,
             _ => true,
         }
     }

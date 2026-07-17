@@ -75,6 +75,10 @@ fn main() -> anyhow::Result<()> {
             let mut config = config;
             cmd_config(&mut config, set, get, &config_path)?;
         }
+        Commands::Wipe { target, source, username, token, gitflare_url, filesystem, yes } => {
+            cmd_wipe(&target, &source, username.as_deref(), token.as_deref(), gitflare_url.as_deref(), filesystem.as_deref(), yes)?;
+            return Ok(());
+        }
         _ => unreachable!(),
     }
 
@@ -282,6 +286,359 @@ fn cmd_init_interactive(target: &PathBuf) -> Result<()> {
     println!("2. Run `gitka sync` to clone and back up repos");
 
     Ok(())
+}
+
+/// Wipe a removable drive and set up Gitka from scratch
+fn cmd_wipe(
+    target: &std::path::Path,
+    source: &str,
+    username: Option<&str>,
+    token: Option<&str>,
+    gitflare_url: Option<&str>,
+    filesystem: Option<&str>,
+    skip_confirm: bool,
+) -> Result<()> {
+    use std::io::{self, Write};
+
+    println!("🔍 Checking target device...\n");
+
+    // 1. Verify target exists
+    if !target.exists() {
+        return Err(GitkaError::UsbDetection(format!(
+            "Target path does not exist: {}",
+            target.display()
+        )));
+    }
+
+    // 2. Check if it's a removable drive — HARD REQUIREMENT
+    let is_removable = usb::validate_removable(target)?;
+    if !is_removable {
+        return Err(GitkaError::UsbDetection(format!(
+            "Refusing to wipe: {} is NOT a removable drive.\n\
+             Only USB/external drives can be wiped.\n\
+             Use `gitka init --target {}` for non-removable drives.",
+            target.display(),
+            target.display()
+        )));
+    }
+
+    // 3. Get drive info for display
+    let drive_info = usb::get_drive_info(target)?;
+
+    println!("╔══════════════════════════════════════════════════════╗");
+    println!("║              ⚠️  DESTRUCTIVE OPERATION  ⚠️           ║");
+    println!("╠══════════════════════════════════════════════════════╣");
+    println!("║  This will ERASE ALL DATA on:                       ║");
+    println!("║                                                      ║");
+    println!("║  Path:       {:<39}║", target.display());
+    println!("║  Label:      {:<39}║", drive_info.label.as_deref().unwrap_or("(none)"));
+    println!("║  Filesystem: {:<39}║", drive_info.fs_type);
+    println!("║  Total:      {:<39}║", format_size(drive_info.total_space));
+    println!("║  Free:       {:<39}║", format_size(drive_info.free_space));
+    println!("║                                                      ║");
+    println!("║  All existing files, partitions, and data will be    ║");
+    println!("║  permanently destroyed. This cannot be undone.       ║");
+    println!("╚══════════════════════════════════════════════════════╝");
+    println!();
+
+    // 4. Interactive confirmation
+    if !skip_confirm {
+        print!("Type YES to confirm wipe of {}: ", target.display());
+        io::stdout().flush()?;
+        let mut input = String::new();
+        io::stdin().read_line(&mut input)?;
+        let input = input.trim();
+
+        if input != "YES" {
+            println!("\n❌ Wipe cancelled. No changes made.");
+            return Ok(());
+        }
+    } else {
+        println!("⚠ --yes flag: skipping confirmation");
+    }
+
+    println!("\n🗑️  Wiping {}...\n", target.display());
+
+    // 5. Format the drive
+    let fs_type = determine_fs(&drive_info, filesystem)?;
+    format_drive(target, &fs_type)?;
+
+    println!("  ✓ Drive formatted as {}", fs_type);
+
+    // 6. Remount (format unmounts the drive)
+    remount_drive(target)?;
+
+    // 7. Create directory structure
+    println!("  Creating directory structure...");
+    std::fs::create_dir_all(target.join("repos").join("archive"))?;
+    std::fs::create_dir_all(target.join("extract"))?;
+    std::fs::create_dir_all(target.join("tools").join("gitflare"))?;
+    std::fs::create_dir_all(target.join("tools").join("recovery"))?;
+    std::fs::create_dir_all(target.join("recovery-data"))?;
+    std::fs::create_dir_all(target.join(".gitka").join("logs"))?;
+    std::fs::create_dir_all(target.join(".gitka").join("repos"))?;
+
+    // 8. Create config
+    println!("  Creating config...");
+    let mut config = Config::default();
+    config.target.path = target.to_path_buf();
+
+    match source {
+        "github" => {
+            config.source.github_username = username.map(|s| s.to_string());
+            config.source.auth_token = token.map(|s| s.to_string());
+        }
+        "gitflare" => {
+            config.source.gitflare_url = gitflare_url.map(|s| s.to_string());
+            config.source.auth_token = token.map(|s| s.to_string());
+        }
+        _ => {
+            return Err(GitkaError::Config(format!("Unknown source type: {}", source)));
+        }
+    }
+
+    let config_path = target.join(".gitka").join("gitka.toml");
+    config.save(&config_path)?;
+
+    println!("  ✓ Config created");
+
+    println!("\n✅ Wipe and setup complete!");
+    println!("  Device: {}", target.display());
+    println!("  Config: {}", config_path.display());
+    println!("\nNext steps:");
+    println!("  1. Run `gitka scan` to discover repos");
+    println!("  2. Run `gitka sync` to clone and back up repos");
+
+    Ok(())
+}
+
+/// Determine filesystem type based on drive size and user preference
+fn determine_fs(drive_info: &usb::DriveInfo, preference: Option<&str>) -> Result<String> {
+    if let Some(fs) = preference {
+        return Ok(fs.to_string());
+    }
+
+    // Auto-detect based on drive size
+    // < 4GB: vfat (FAT32) — maximum compatibility
+    // 4GB - 2TB: ext4 — good balance
+    // > 2TB: ext4 — best support for large drives
+    if drive_info.total_space < 4 * 1024 * 1024 * 1024 {
+        Ok("vfat".to_string())
+    } else {
+        Ok("ext4".to_string())
+    }
+}
+
+/// Format a drive with the specified filesystem
+#[cfg(target_os = "linux")]
+fn format_drive(target: &std::path::Path, fs_type: &str) -> Result<()> {
+    use std::process::Command;
+
+    // Unmount first
+    let _ = Command::new("umount")
+        .arg(target)
+        .output();
+
+    let device_str = target.to_string_lossy();
+
+    let output = match fs_type {
+        "vfat" => {
+            Command::new("mkfs.vfat")
+                .args(&["-F", "32", "-n", "GITKA", &device_str])
+                .output()
+        }
+        "ext4" => {
+            Command::new("mkfs.ext4")
+                .args(&["-F", "-L", "GITKA", &device_str])
+                .output()
+        }
+        "ntfs" => {
+            Command::new("mkfs.ntfs")
+                .args(&["-f", "-L", "GITKA", &device_str])
+                .output()
+        }
+        _ => {
+            return Err(GitkaError::Config(format!(
+                "Unsupported filesystem: {}. Use ext4, vfat, or ntfs.",
+                fs_type
+            )));
+        }
+    };
+
+    let output = output.map_err(|e| GitkaError::Config(format!("Failed to run mkfs: {}", e)))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(GitkaError::Config(format!(
+            "Format failed: {}",
+            stderr.trim()
+        )));
+    }
+
+    Ok(())
+}
+
+/// Format a drive on macOS
+#[cfg(target_os = "macos")]
+fn format_drive(target: &std::path::Path, fs_type: &str) -> Result<()> {
+    use std::process::Command;
+
+    // Unmount first
+    let _ = Command::new("diskutil")
+        .args(&["unmountDisk", "force", target.to_str().unwrap_or("")])
+        .output();
+
+    // Get the disk identifier
+    let output = Command::new("diskutil")
+        .args(&["info", "-plist", target.to_str().unwrap_or("")])
+        .output()
+        .map_err(|e| GitkaError::Config(format!("Failed to run diskutil: {}", e)))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let plist: serde_json::Value = serde_json::from_str(&stdout)
+        .map_err(|e| GitkaError::Config(format!("Failed to parse diskutil output: {}", e)))?;
+
+    let disk_id = plist["DeviceNode"].as_str().unwrap_or("");
+
+    let output = match fs_type {
+        "vfat" | "fat32" => {
+            Command::new("diskutil")
+                .args(&["eraseDisk", "FAT32", "GITKA", "MBRFormat", disk_id])
+                .output()
+        }
+        "ext4" => {
+            // macOS doesn't natively support ext4, use ExFAT instead
+            println!("  ⚠ macOS doesn't support ext4 natively. Using ExFAT instead.");
+            Command::new("diskutil")
+                .args(&["eraseDisk", "ExFAT", "GITKA", "MBRFormat", disk_id])
+                .output()
+        }
+        "exfat" => {
+            Command::new("diskutil")
+                .args(&["eraseDisk", "ExFAT", "GITKA", "MBRFormat", disk_id])
+                .output()
+        }
+        "ntfs" => {
+            Command::new("diskutil")
+                .args(&["eraseDisk", "NTFS", "GITKA", "MBRFormat", disk_id])
+                .output()
+        }
+        _ => {
+            return Err(GitkaError::Config(format!(
+                "Unsupported filesystem: {}. Use vfat, exfat, or ntfs on macOS.",
+                fs_type
+            )));
+        }
+    };
+
+    let output = output.map_err(|e| GitkaError::Config(format!("Failed to run diskutil: {}", e)))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(GitkaError::Config(format!(
+            "Format failed: {}",
+            stderr.trim()
+        )));
+    }
+
+    Ok(())
+}
+
+/// Format a drive on Windows
+#[cfg(target_os = "windows")]
+fn format_drive(target: &std::path::Path, fs_type: &str) -> Result<()> {
+    use std::process::Command;
+
+    let drive_str = target.to_string_lossy();
+
+    // Use diskpart for formatting on Windows
+    let diskpart_script = format!(
+        "select volume {}\nformat fs={} label=GITKA quick\n",
+        drive_str.trim_end_matches('\\'),
+        fs_type
+    );
+
+    let output = Command::new("diskpart")
+        .args(&["/s", &format!("{}\nexit\n", diskpart_script)])
+        .output()
+        .map_err(|e| GitkaError::Config(format!("Failed to run diskpart: {}", e)))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(GitkaError::Config(format!(
+            "Format failed: {}",
+            stderr.trim()
+        )));
+    }
+
+    Ok(())
+}
+
+/// Remount a drive after formatting
+#[cfg(target_os = "linux")]
+fn remount_drive(target: &std::path::Path) -> Result<()> {
+    use std::process::Command;
+
+    // Wait for kernel to recognize the new filesystem
+    std::thread::sleep(std::time::Duration::from_millis(500));
+
+    // Try to mount
+    let output = Command::new("mount")
+        .arg(target)
+        .output()
+        .map_err(|e| GitkaError::Config(format!("Failed to mount: {}", e)))?;
+
+    if !output.status.success() {
+        // Some systems auto-mount, so this might be OK
+        // Check if the mount point is accessible
+        if !target.join(".gitka").exists() && !target.exists() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(GitkaError::Config(format!(
+                "Failed to mount after format: {}",
+                stderr.trim()
+            )));
+        }
+    }
+
+    Ok(())
+}
+
+/// Remount a drive on macOS
+#[cfg(target_os = "macos")]
+fn remount_drive(target: &std::path::Path) -> Result<()> {
+    use std::process::Command;
+
+    // macOS auto-mounts after format
+    std::thread::sleep(std::time::Duration::from_millis(500));
+
+    // Verify mount
+    if !target.exists() {
+        return Err(GitkaError::Config(
+            "Drive not accessible after format. Check Disk Utility.".to_string(),
+        ));
+    }
+
+    Ok(())
+}
+
+/// Remount a drive on Windows
+#[cfg(target_os = "windows")]
+fn remount_drive(_target: &std::path::Path) -> Result<()> {
+    // Windows auto-mounts after format
+    Ok(())
+}
+
+/// Format bytes to human-readable size
+fn format_size(bytes: u64) -> String {
+    if bytes < 1024 {
+        format!("{} B", bytes)
+    } else if bytes < 1024 * 1024 {
+        format!("{:.1} KB", bytes as f64 / 1024.0)
+    } else if bytes < 1024 * 1024 * 1024 {
+        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
+    } else {
+        format!("{:.1} GB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
+    }
 }
 
 /// Scan sources and target, show size report
