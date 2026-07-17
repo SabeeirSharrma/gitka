@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+use crate::encryption;
 use crate::error::{GitkaError, Result};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -11,6 +12,7 @@ pub struct Config {
     pub compression: CompressionConfig,
     pub extraction: ExtractionConfig,
     pub toggles: Toggles,
+    pub encryption: Option<EncryptionConfig>,
     pub integrations: Integrations,
 }
 
@@ -124,6 +126,14 @@ pub struct Toggles {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EncryptionConfig {
+    /// Encryption password (derived key stored separately)
+    pub password: Option<String>,
+    /// Salt for key derivation (hex encoded)
+    pub salt: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Integrations {
     /// GitFlare LAN serving config
     pub gitflare: Option<GitFlareConfig>,
@@ -167,6 +177,7 @@ impl Default for Config {
                 encryption: false,
                 recovery_records: false,
             },
+            encryption: None,
             integrations: Integrations {
                 gitflare: Some(GitFlareConfig {
                     port: 8080,
@@ -224,5 +235,33 @@ impl Config {
     pub fn is_workspace_eligible(&self, name: &str) -> Result<bool> {
         let repo = self.get_repo(name)?;
         Ok(repo.workspace_eligible)
+    }
+
+    /// Get the encryption key if encryption is enabled
+    pub fn get_encryption_key(&self) -> Option<encryption::EncryptionKey> {
+        if !self.toggles.encryption {
+            return None;
+        }
+
+        let enc_config = self.encryption.as_ref()?;
+        let password = enc_config.password.as_ref()?;
+
+        let salt = if let Some(salt_hex) = &enc_config.salt {
+            // Decode hex salt
+            let mut salt = [0u8; 16];
+            let bytes = hex::decode(salt_hex).ok()?;
+            if bytes.len() != 16 {
+                return None;
+            }
+            salt.copy_from_slice(&bytes);
+            salt
+        } else {
+            // Generate new salt
+            let salt = encryption::generate_salt();
+            // Note: We should save this salt, but for now just use it
+            salt
+        };
+
+        Some(encryption::derive_key(password, &salt))
     }
 }

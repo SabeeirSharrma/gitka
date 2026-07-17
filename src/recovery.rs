@@ -225,3 +225,73 @@ fn find_par2_file(dir: &Path) -> Result<PathBuf> {
         dir.display()
     )))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn test_is_par2_available() {
+        // This test checks if par2 is installed on the system
+        // It's not a failure if par2 is not available
+        let available = is_par2_available();
+        println!("par2 available: {}", available);
+        // We don't assert here since par2 may not be installed
+    }
+
+    #[test]
+    fn test_create_and_verify_recovery() {
+        // Skip if par2 is not available
+        if !is_par2_available() {
+            println!("Skipping recovery test: par2 not installed");
+            return;
+        }
+
+        let temp_dir = TempDir::new().unwrap();
+        let test_file = temp_dir.path().join("test.txt");
+        let recovery_dir = temp_dir.path().join("recovery");
+
+        // Create a test file
+        std::fs::write(&test_file, b"Hello, World! This is a test file for recovery records.").unwrap();
+
+        // Create recovery records
+        let info = create_recovery(&test_file, &recovery_dir, 25).unwrap();
+        assert!(info.recovery_size > 0);
+        assert!(info.block_count > 0);
+
+        // Verify recovery records
+        let valid = verify_recovery(&recovery_dir).unwrap();
+        assert!(valid);
+    }
+
+    #[test]
+    fn test_repair_file() {
+        // Skip if par2 is not available
+        if !is_par2_available() {
+            println!("Skipping repair test: par2 not installed");
+            return;
+        }
+
+        let temp_dir = TempDir::new().unwrap();
+        let test_file = temp_dir.path().join("test.txt");
+        let recovery_dir = temp_dir.path().join("recovery");
+
+        // Create a test file
+        let original_content = b"Hello, World! This is a test file for recovery records.";
+        std::fs::write(&test_file, original_content).unwrap();
+
+        // Create recovery records
+        create_recovery(&test_file, &recovery_dir, 25).unwrap();
+
+        // Corrupt the file (overwrite with different content)
+        std::fs::write(&test_file, b"CORRUPTED CONTENT").unwrap();
+
+        // Repair the file
+        repair_file(&test_file, &recovery_dir).unwrap();
+
+        // Verify the file is restored
+        let repaired_content = std::fs::read(&test_file).unwrap();
+        assert_eq!(repaired_content, original_content);
+    }
+}

@@ -2,6 +2,7 @@ mod archive;
 mod cli;
 mod compress;
 mod config;
+mod dirty;
 mod encryption;
 mod error;
 mod recovery;
@@ -374,6 +375,38 @@ fn cmd_scan(config: &Config) -> Result<()> {
 
 /// Sync repos
 fn cmd_sync(config: &Config, repos: Option<Vec<String>>) -> Result<()> {
+    // Load dirty log
+    let dirty_log = dirty::DirtyLog::load(config);
+
+    // Crash resilience: detect orphaned extracted repos
+    if !dirty_log.is_empty() {
+        let repo_manager = repo::RepoManager::new(config.clone());
+        let all_repos = repo_manager.list_repos()?;
+        let extracted: Vec<String> = all_repos.iter()
+            .filter(|r| r.state != repo::RepoState::Archived)
+            .map(|r| r.name.clone())
+            .collect();
+
+        let orphaned = dirty_log.detect_orphaned(&extracted);
+        if !orphaned.is_empty() {
+            println!("⚠ Detected {} orphaned repo(s) from an earlier session:", orphaned.len());
+            for name in &orphaned {
+                println!("  - {} (was left extracted, recompressing)", name);
+            }
+            println!();
+
+            // Recompress orphaned repos before continuing
+            for name in &orphaned {
+                println!("Recompressing {}...", name);
+                match cmd_lock(config, name) {
+                    Ok(()) => println!("  ✓ {} recompressed", name),
+                    Err(e) => println!("  ⚠ Failed to recompress {}: {}", name, e),
+                }
+            }
+            println!();
+        }
+    }
+
     println!("Syncing repos...");
 
     // Get source provider
@@ -394,6 +427,17 @@ fn cmd_sync(config: &Config, repos: Option<Vec<String>>) -> Result<()> {
     let repo_manager = repo::RepoManager::new(config.clone());
 
     for remote_repo in repos_to_sync {
+        // Incremental sync: skip repos not in dirty log (unless --repos was specified)
+        if repos.is_none() && !dirty_log.is_dirty(&remote_repo.name) {
+            // Check if repo exists and is archived — skip fetch entirely
+            if let Ok(meta) = repo_manager.load_meta(&remote_repo.name) {
+                if meta.state == repo::RepoState::Archived {
+                    println!("\nSkipping {} (not modified since last sync)", remote_repo.name);
+                    continue;
+                }
+            }
+        }
+
         println!("\nSyncing {}...", remote_repo.full_name);
 
         // Check if repo exists locally
@@ -482,6 +526,23 @@ fn cmd_sync(config: &Config, repos: Option<Vec<String>>) -> Result<()> {
                                 archive_size as f64 / 1_048_576.0,
                                 repo_size as f64 / 1_048_576.0);
 
+                            // Encrypt if enabled
+                            if config.toggles.encryption {
+                                if let Some(key) = config.get_encryption_key() {
+                                    println!("  Encrypting...");
+                                    match encryption::encrypt_file(&archive_path, &key) {
+                                        Ok(enc_size) => {
+                                            println!("  ✓ Encrypted ({:.1} MB)", enc_size as f64 / 1_048_576.0);
+                                        }
+                                        Err(e) => {
+                                            println!("  ⚠ Encryption failed: {}", e);
+                                        }
+                                    }
+                                } else {
+                                    println!("  ⚠ Encryption enabled but no password configured");
+                                }
+                            }
+
                             // Create recovery records if enabled
                             if config.toggles.recovery_records && recovery::is_par2_available() {
                                 println!("  Creating recovery records...");
@@ -513,6 +574,11 @@ fn cmd_sync(config: &Config, repos: Option<Vec<String>>) -> Result<()> {
             }
         }
     }
+
+    // Clear dirty log only after successful sync
+    let mut dirty_log = dirty::DirtyLog::load(config);
+    dirty_log.clear_all();
+    dirty_log.save(config)?;
 
     println!("\n✓ Sync complete");
     Ok(())
@@ -580,14 +646,38 @@ fn cmd_unlock(config: &Config, repo_name: &str) -> Result<()> {
     let extraction_path = meta.extraction_target(config);
     std::fs::create_dir_all(&extraction_path)?;
 
-    // Decompress archive
+    // Decrypt if encrypted
     let archive_path = meta.archive_full_path(config);
-    compress::decompress_directory(&archive_path, &extraction_path)?;
+    if encryption::is_encrypted(&archive_path)? {
+        if let Some(key) = config.get_encryption_key() {
+            println!("  Decrypting...");
+            // Copy archive to temp location for decryption
+            let temp_archive = std::env::temp_dir().join(format!("{}.gitka.zst.tmp", repo_name));
+            std::fs::copy(&archive_path, &temp_archive)?;
+            encryption::decrypt_file(&temp_archive, &key)?;
+            // Decompress from temp
+            compress::decompress_directory(&temp_archive, &extraction_path)?;
+            // Clean up temp
+            std::fs::remove_file(&temp_archive)?;
+        } else {
+            return Err(GitkaError::Config(
+                "Archive is encrypted but no password configured".to_string(),
+            ));
+        }
+    } else {
+        // Decompress archive
+        compress::decompress_directory(&archive_path, &extraction_path)?;
+    }
 
     // Update metadata
     meta.state = repo::RepoState::ExtractedLocal;
     meta.extraction_path = Some(extraction_path.clone());
     repo_manager.save_meta(&meta)?;
+
+    // Record in dirty log
+    let mut dirty_log = dirty::DirtyLog::load(config);
+    dirty_log.record_unlock(repo_name);
+    dirty_log.save(config)?;
 
     println!("✓ Repo extracted to {}", extraction_path.display());
     println!("  You can now make commits offline.");
@@ -623,9 +713,30 @@ fn cmd_lock(config: &Config, repo_name: &str) -> Result<()> {
         compress::verify_archive(&archive_path)?;
     }
 
+    // Encrypt if enabled
+    if config.toggles.encryption {
+        if let Some(key) = config.get_encryption_key() {
+            println!("  Encrypting...");
+            match encryption::encrypt_file(&archive_path, &key) {
+                Ok(enc_size) => {
+                    println!("  ✓ Encrypted ({:.1} MB)", enc_size as f64 / 1_048_576.0);
+                }
+                Err(e) => {
+                    println!("  ⚠ Encryption failed: {}", e);
+                }
+            }
+        }
+    }
+
     // Clean up extraction
     if config.toggles.clear_after_lock {
         std::fs::remove_dir_all(&extraction_path)?;
+    }
+
+    // Clean up old recovery records (will be regenerated on next sync)
+    let old_recovery_dir = config.recovery_dir().join(repo_name);
+    if old_recovery_dir.exists() {
+        std::fs::remove_dir_all(&old_recovery_dir)?;
     }
 
     // Update metadata
@@ -635,6 +746,11 @@ fn cmd_lock(config: &Config, repo_name: &str) -> Result<()> {
     meta.archive_size = new_size;
     meta.extraction_path = None;
     repo_manager.save_meta(&meta)?;
+
+    // Clear from dirty log (recompressed and archived)
+    let mut dirty_log = dirty::DirtyLog::load(config);
+    dirty_log.clear_repo(repo_name);
+    dirty_log.save(config)?;
 
     println!("✓ Repo locked and recompressed");
     println!("  Archive: {} ({:.1} MB)", archive_path.display(), new_size as f64 / 1_048_576.0);
@@ -647,12 +763,24 @@ fn cmd_serve(config: &Config, repo_name: &str, stop: bool) -> Result<()> {
     if stop {
         println!("Stopping GitFlare server for {}...", repo_name);
         match serve::stop(config, repo_name)? {
-            true => println!("✓ Server stopped"),
+            true => {
+                // Clear from dirty log when server stops (recompressed by stop)
+                let mut dirty_log = dirty::DirtyLog::load(config);
+                dirty_log.clear_repo(repo_name);
+                dirty_log.save(config)?;
+                println!("✓ Server stopped")
+            }
             false => println!("  No server running for {}", repo_name),
         }
     } else {
         println!("Starting GitFlare server for {}...", repo_name);
         let info = serve::start(config, repo_name)?;
+
+        // Record in dirty log
+        let mut dirty_log = dirty::DirtyLog::load(config);
+        dirty_log.record_serve(repo_name);
+        dirty_log.save(config)?;
+
         println!("✓ Server started on port {}", info.port);
         println!();
         println!("  Clone URL (local):   {}", info.clone_url());

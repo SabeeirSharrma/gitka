@@ -133,25 +133,84 @@ pub fn start(config: &Config, repo_name: &str) -> Result<ServeInfo> {
     // 9. Start GitFlare
     println!("  Starting GitFlare on port {}...", gitflare_config.port);
 
-    let gitflare_src = find_gitflare_source()?;
+    // Resolve to absolute path — relative paths break when the launch script cd's to serve_dir
+    let gitflare_src = find_gitflare_source()?
+        .canonicalize()
+        .map_err(|e| GitkaError::Config(format!("Failed to resolve GitFlare path: {}", e)))?;
     let venv_python = serve_dir.join(".venv/bin/python3");
 
-    let child = Command::new(&venv_python)
-        .args(&["-m", "uvicorn", "gitflare.main:app"])
-        .arg("--host")
-        .arg(&gitflare_config.bind_address)
-        .arg("--port")
-        .arg(gitflare_config.port.to_string())
-        .arg("--app-dir")
-        .arg(&gitflare_src)
+    // Write a launch script — needed for proper double-fork detach via nohup.
+    // NOTE: Do NOT use `exec` here — it replaces bash with python, which
+    // removes nohup's SIGHUP protection and kills the server when gitka exits.
+    // Use PYTHONPATH instead of --app-dir for reliable module resolution.
+    let launch_script = format!(
+        r#"#!/bin/bash
+cd "{serve_dir}"
+export PYTHONPATH="{app_dir}"
+GITFLARE_CONFIG="{config}" "{python}" -m uvicorn gitflare.main:app \
+    --host "{host}" \
+    --port {port}
+"#,
+        serve_dir = serve_dir.display(),
+        config = config_path.display(),
+        python = venv_python.display(),
+        host = gitflare_config.bind_address,
+        port = gitflare_config.port,
+        app_dir = gitflare_src.display(),
+    );
+
+    let script_path = serve_dir.join(".gitka-gf-launch.sh");
+    fs::write(&script_path, &launch_script)?;
+    fs::set_permissions(&script_path, std::os::unix::fs::PermissionsExt::from_mode(0o755))?;
+
+    // Launch via nohup bash script — stdin/stdout/stderr all /dev/null
+    // nohup + bash ensures the process survives parent exit.
+    // Use bash -c to keep bash alive (no exec) so nohup's SIGHUP protection works.
+    let script_str = script_path.to_string_lossy().to_string();
+    let bash_cmd = format!(
+        "nohup bash {} < /dev/null > /dev/null 2>&1 &",
+        shell_quote(&script_str)
+    );
+
+    let mut cmd = Command::new("bash");
+    cmd.arg("-c")
+        .arg(&bash_cmd)
         .current_dir(&serve_dir)
-        .env("GITFLARE_CONFIG", &config_path)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        // Create a new process group so signals don't propagate from the terminal
+        cmd.process_group(0);
+    }
+
+    let _child = cmd.spawn()
         .map_err(|e| GitkaError::Config(format!("Failed to start GitFlare: {}", e)))?;
 
-    let pid = child.id();
+    // Wait for the server to bind the port (up to 5 seconds)
+    let mut bound = false;
+    for _ in 0..20 {
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        if find_process_by_port(gitflare_config.port).is_some() {
+            bound = true;
+            break;
+        }
+    }
+
+    // Clean up launch script
+    let _ = fs::remove_file(&script_path);
+
+    if !bound {
+        return Err(GitkaError::Config(
+            "GitFlare failed to start (port not bound after 5s). Check python/venv.".into(),
+        ));
+    }
+
+    // Get the PID
+    let pid = find_process_by_port(gitflare_config.port).unwrap_or(0);
 
     // Write PID file
     fs::create_dir_all(config.state_dir())?;
@@ -176,8 +235,8 @@ pub fn start(config: &Config, repo_name: &str) -> Result<ServeInfo> {
     meta.extraction_path = Some(extract_temp);
     repo_manager.save_meta(&meta)?;
 
-    // Detach child - it runs in background
-    std::mem::forget(child);
+    // Give the server a moment to start
+    std::thread::sleep(std::time::Duration::from_millis(500));
 
     Ok(info)
 }
@@ -509,4 +568,23 @@ fn get_local_ip() -> Option<String> {
     }
 
     None
+}
+
+/// Simple shell quoting for safe inclusion in bash -c commands
+fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+/// Find a process ID by listening port
+fn find_process_by_port(port: u16) -> Option<u32> {
+    // Use lsof to find process using the port
+    let output = Command::new("lsof")
+        .args(&["-i", &format!(":{}", port), "-t"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    stdout.trim().lines().next()?.parse().ok()
 }

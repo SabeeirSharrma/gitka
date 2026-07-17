@@ -44,7 +44,12 @@ fn detect_removable_drives() -> Result<Vec<DriveInfo>> {
         detect_removable_drives_windows()
     }
 
-    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+    #[cfg(target_os = "macos")]
+    {
+        detect_removable_drives_macos()
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
     {
         Err(GitkaError::UsbDetection(
             "Unsupported platform for USB detection".to_string(),
@@ -65,7 +70,12 @@ fn detect_local_drives() -> Result<Vec<DriveInfo>> {
         detect_local_drives_windows()
     }
 
-    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+    #[cfg(target_os = "macos")]
+    {
+        detect_local_drives_macos()
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
     {
         Err(GitkaError::UsbDetection(
             "Unsupported platform for drive detection".to_string(),
@@ -294,21 +304,440 @@ fn detect_local_drives_linux_sysfs() -> Result<Vec<DriveInfo>> {
 }
 
 // ============================================================================
-// Windows detection (WMI-based, stubs for now)
+// Windows detection (WMI-based via PowerShell)
 // ============================================================================
 
-/// Windows removable drive detection via WMI
+/// Windows removable drive detection via PowerShell WMI
 #[cfg(target_os = "windows")]
 fn detect_removable_drives_windows() -> Result<Vec<DriveInfo>> {
-    // TODO: Implement WMI-based detection for Windows
-    Ok(Vec::new())
+    use std::process::Command;
+
+    // Use PowerShell to query WMI for removable drives
+    let ps_script = r#"
+        Get-CimInstance Win32_LogicalDisk | Where-Object {
+            $_.DriveType -eq 2
+        } | ForEach-Object {
+            @{
+                DeviceID = $_.DeviceID
+                FileSystem = $_.FileSystem
+                FreeSpace = $_.FreeSpace
+                Size = $_.Size
+                VolumeName = $_.VolumeName
+            }
+        } | ConvertTo-Json -Compress
+    "#;
+
+    let output = Command::new("powershell.exe")
+        .args(&["-NoProfile", "-NonInteractive", "-Command", ps_script])
+        .output()
+        .map_err(|e| GitkaError::UsbDetection(format!("Failed to run PowerShell: {}", e)))?;
+
+    if !output.status.success() {
+        return Err(GitkaError::UsbDetection(
+            "PowerShell WMI query failed".to_string(),
+        ));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    if stdout.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Handle both single object and array responses
+    let json_str = stdout.trim();
+    let json_val: serde_json::Value = if json_str.starts_with('[') {
+        serde_json::from_str(json_str)
+            .map_err(|e| GitkaError::UsbDetection(format!("Failed to parse PowerShell JSON: {}", e)))?
+    } else {
+        // Single object, wrap in array
+        let val: serde_json::Value = serde_json::from_str(json_str)
+            .map_err(|e| GitkaError::UsbDetection(format!("Failed to parse PowerShell JSON: {}", e)))?;
+        serde_json::Value::Array(vec![val])
+    };
+
+    let mut drives = Vec::new();
+
+    if let Some(items) = json_val.as_array() {
+        for item in items {
+            let device_id = item["DeviceID"].as_str().unwrap_or("");
+            let fs_type = item["FileSystem"].as_str().unwrap_or("unknown");
+            let free_space = item["FreeSpace"].as_u64().unwrap_or(0);
+            let total_space = item["Size"].as_u64().unwrap_or(0);
+            let label = item["VolumeName"].as_str().map(|s| s.to_string());
+
+            // Windows drive type 2 = DRIVE_REMOVABLE
+            if !device_id.is_empty() {
+                drives.push(DriveInfo {
+                    mount_point: PathBuf::from(device_id),
+                    fs_type: fs_type.to_string(),
+                    total_space,
+                    free_space,
+                    is_removable: true,
+                    label,
+                });
+            }
+        }
+    }
+
+    Ok(drives)
 }
 
-/// Windows local drive detection
+/// Windows local drive detection (non-removable)
 #[cfg(target_os = "windows")]
 fn detect_local_drives_windows() -> Result<Vec<DriveInfo>> {
-    // TODO: Implement WMI-based detection for Windows
-    Ok(Vec::new())
+    use std::process::Command;
+
+    // Use PowerShell to query WMI for local disks (type 3 = DRIVE_FIXED)
+    let ps_script = r#"
+        Get-CimInstance Win32_LogicalDisk | Where-Object {
+            $_.DriveType -eq 3
+        } | ForEach-Object {
+            @{
+                DeviceID = $_.DeviceID
+                FileSystem = $_.FileSystem
+                FreeSpace = $_.FreeSpace
+                Size = $_.Size
+                VolumeName = $_.VolumeName
+            }
+        } | ConvertTo-Json -Compress
+    "#;
+
+    let output = Command::new("powershell.exe")
+        .args(&["-NoProfile", "-NonInteractive", "-Command", ps_script])
+        .output()
+        .map_err(|e| GitkaError::UsbDetection(format!("Failed to run PowerShell: {}", e)))?;
+
+    if !output.status.success() {
+        return Err(GitkaError::UsbDetection(
+            "PowerShell WMI query failed".to_string(),
+        ));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    if stdout.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let json_str = stdout.trim();
+    let json_val: serde_json::Value = if json_str.starts_with('[') {
+        serde_json::from_str(json_str)
+            .map_err(|e| GitkaError::UsbDetection(format!("Failed to parse PowerShell JSON: {}", e)))?
+    } else {
+        let val: serde_json::Value = serde_json::from_str(json_str)
+            .map_err(|e| GitkaError::UsbDetection(format!("Failed to parse PowerShell JSON: {}", e)))?;
+        serde_json::Value::Array(vec![val])
+    };
+
+    let mut drives = Vec::new();
+
+    if let Some(items) = json_val.as_array() {
+        for item in items {
+            let device_id = item["DeviceID"].as_str().unwrap_or("");
+            let fs_type = item["FileSystem"].as_str().unwrap_or("unknown");
+            let free_space = item["FreeSpace"].as_u64().unwrap_or(0);
+            let total_space = item["Size"].as_u64().unwrap_or(0);
+            let label = item["VolumeName"].as_str().map(|s| s.to_string());
+
+            if !device_id.is_empty() {
+                drives.push(DriveInfo {
+                    mount_point: PathBuf::from(device_id),
+                    fs_type: fs_type.to_string(),
+                    total_space,
+                    free_space,
+                    is_removable: false,
+                    label,
+                });
+            }
+        }
+    }
+
+    Ok(drives)
+}
+
+/// Windows drive info for a path
+#[cfg(target_os = "windows")]
+fn get_drive_info_windows(path: &Path) -> Result<DriveInfo> {
+    use std::process::Command;
+
+    // Extract drive letter from path (e.g., "C:\foo" -> "C:")
+    let drive_letter = path.to_string_lossy()
+        .chars()
+        .take(2)
+        .collect::<String>();
+
+    let ps_script = format!(
+        r#"
+        Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='{}'" | ForEach-Object {{
+            @{{
+                DeviceID = $_.DeviceID
+                FileSystem = $_.FileSystem
+                FreeSpace = $_.FreeSpace
+                Size = $_.Size
+                VolumeName = $_.VolumeName
+                DriveType = $_.DriveType
+            }}
+        }} | ConvertTo-Json -Compress
+        "#,
+        drive_letter
+    );
+
+    let output = Command::new("powershell.exe")
+        .args(&["-NoProfile", "-NonInteractive", "-Command", &ps_script])
+        .output()
+        .map_err(|e| GitkaError::UsbDetection(format!("Failed to run PowerShell: {}", e)))?;
+
+    if !output.status.success() {
+        return Err(GitkaError::UsbDetection(
+            "PowerShell WMI query failed".to_string(),
+        ));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(stdout.trim())
+        .map_err(|e| GitkaError::UsbDetection(format!("Failed to parse PowerShell JSON: {}", e)))?;
+
+    Ok(DriveInfo {
+        mount_point: PathBuf::from(&drive_letter),
+        fs_type: json["FileSystem"].as_str().unwrap_or("unknown").to_string(),
+        total_space: json["Size"].as_u64().unwrap_or(0),
+        free_space: json["FreeSpace"].as_u64().unwrap_or(0),
+        is_removable: json["DriveType"].as_u64().unwrap_or(0) == 2,
+        label: json["VolumeName"].as_str().map(|s| s.to_string()),
+    })
+}
+
+// ============================================================================
+// macOS detection (diskutil-based)
+// ============================================================================
+
+/// macOS removable drive detection via diskutil
+#[cfg(target_os = "macos")]
+fn detect_removable_drives_macos() -> Result<Vec<DriveInfo>> {
+    use std::process::Command;
+
+    // diskutil list -plist external gives external (removable) disks
+    let output = Command::new("diskutil")
+        .args(&["list", "-plist", "external"])
+        .output()
+        .map_err(|e| GitkaError::UsbDetection(format!("Failed to run diskutil: {}", e)))?;
+
+    if !output.status.success() {
+        return Err(GitkaError::UsbDetection(
+            "diskutil command failed".to_string(),
+        ));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let plist: serde_json::Value = serde_json::from_str(&stdout)
+        .map_err(|e| GitkaError::UsbDetection(format!("Failed to parse diskutil plist: {}", e)))?;
+
+    let mut drives = Vec::new();
+
+    if let Some(all_disks) = plist["AllDisksAndPartitions"].as_array() {
+        for disk in all_disks {
+            // Get disk info
+            let disk_id = disk["DeviceIdentifier"].as_str().unwrap_or("");
+            let _disk_name = disk["VolumeName"].as_str().unwrap_or("");
+
+            // Check partitions
+            if let Some(parts) = disk["Partitions"].as_array() {
+                for part in parts {
+                    let mount_point = part["MountPoint"].as_str().unwrap_or("");
+                    let fs_type = part["Content"].as_str().unwrap_or("unknown");
+                    let label = part["VolumeName"].as_str().map(|s| s.to_string());
+                    let size_bytes = part["Size"].as_u64().unwrap_or(0);
+
+                    if !mount_point.is_empty() && !disk_id.is_empty() {
+                        // Get free space via statvfs
+                        let (total, free) = get_disk_space_statvfs_macos(
+                            &PathBuf::from(mount_point)
+                        ).unwrap_or((size_bytes, 0));
+
+                        drives.push(DriveInfo {
+                            mount_point: PathBuf::from(mount_point),
+                            fs_type: fs_type.to_string(),
+                            total_space: total,
+                            free_space: free,
+                            is_removable: true,
+                            label,
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(drives)
+}
+
+/// macOS local drive detection via diskutil
+#[cfg(target_os = "macos")]
+fn detect_local_drives_macos() -> Result<Vec<DriveInfo>> {
+    use std::process::Command;
+
+    // diskutil list -plist internal gives internal disks
+    let output = Command::new("diskutil")
+        .args(&["list", "-plist", "internal"])
+        .output()
+        .map_err(|e| GitkaError::UsbDetection(format!("Failed to run diskutil: {}", e)))?;
+
+    if !output.status.success() {
+        return Err(GitkaError::UsbDetection(
+            "diskutil command failed".to_string(),
+        ));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let plist: serde_json::Value = serde_json::from_str(&stdout)
+        .map_err(|e| GitkaError::UsbDetection(format!("Failed to parse diskutil plist: {}", e)))?;
+
+    let mut drives = Vec::new();
+
+    if let Some(all_disks) = plist["AllDisksAndPartitions"].as_array() {
+        for disk in all_disks {
+            let disk_id = disk["DeviceIdentifier"].as_str().unwrap_or("");
+
+            if let Some(parts) = disk["Partitions"].as_array() {
+                for part in parts {
+                    let mount_point = part["MountPoint"].as_str().unwrap_or("");
+                    let fs_type = part["Content"].as_str().unwrap_or("unknown");
+                    let label = part["VolumeName"].as_str().map(|s| s.to_string());
+                    let size_bytes = part["Size"].as_u64().unwrap_or(0);
+
+                    if !mount_point.is_empty() && !disk_id.is_empty() {
+                        let (total, free) = get_disk_space_statvfs_macos(
+                            &PathBuf::from(mount_point)
+                        ).unwrap_or((size_bytes, 0));
+
+                        drives.push(DriveInfo {
+                            mount_point: PathBuf::from(mount_point),
+                            fs_type: fs_type.to_string(),
+                            total_space: total,
+                            free_space: free,
+                            is_removable: false,
+                            label,
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(drives)
+}
+
+/// macOS statvfs wrapper
+#[cfg(target_os = "macos")]
+fn get_disk_space_statvfs_macos(mount_point: &Path) -> Result<(u64, u64)> {
+    use std::ffi::CString;
+
+    let path = CString::new(mount_point.to_string_lossy().as_bytes().to_vec())
+        .map_err(|e| GitkaError::UsbDetection(format!("Invalid path: {}", e)))?;
+
+    let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
+
+    let ret = unsafe { libc::statvfs(path.as_ptr(), &mut stat as *mut libc::statvfs) };
+
+    if ret != 0 {
+        return Err(GitkaError::UsbDetection(
+            format!("statvfs failed for {}", mount_point.display()),
+        ));
+    }
+
+    let block_size = stat.f_frsize as u64;
+    let total = stat.f_blocks * block_size;
+    let free = stat.f_bavail * block_size;
+
+    Ok((total, free))
+}
+
+/// macOS removable drive validation via diskutil
+#[cfg(target_os = "macos")]
+fn validate_removable_macos(path: &Path) -> Result<bool> {
+    use std::process::Command;
+
+    // Find the mount point for this path
+    let path_str = path.to_string_lossy();
+
+    // Check if path is under /Volumes
+    if path_str.starts_with("/Volumes/") {
+        let vol_name = path_str.strip_prefix("/Volumes/").unwrap_or("");
+        let vol_name = vol_name.split('/').next().unwrap_or(vol_name);
+
+        // Query diskutil for this volume
+        let output = Command::new("diskutil")
+            .args(&["info", "-plist", &format!("/Volumes/{}", vol_name)])
+            .output()
+            .map_err(|e| GitkaError::UsbDetection(format!("Failed to run diskutil: {}", e)))?;
+
+        if output.status.success() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            if let Ok(plist) = serde_json::from_str::<serde_json::Value>(&stdout) {
+                // Check if "Protocol" is "USB" or "DeviceProtocol" indicates external
+                let protocol = plist["Protocol"].as_str().unwrap_or("");
+                let removable = protocol == "USB" || protocol == "FireWire" || protocol == "Thunderbolt";
+                return Ok(removable);
+            }
+        }
+    }
+
+    Ok(false)
+}
+
+/// macOS drive info for a path
+#[cfg(target_os = "macos")]
+fn get_drive_info_macos(path: &Path) -> Result<DriveInfo> {
+    use std::process::Command;
+
+    // Find the volume
+    let path_str = path.to_string_lossy();
+    let vol_path = if path_str.starts_with("/Volumes/") {
+        let vol_name = path_str.strip_prefix("/Volumes/").unwrap_or("");
+        let vol_name = vol_name.split('/').next().unwrap_or(vol_name);
+        format!("/Volumes/{}", vol_name)
+    } else if path_str.starts_with("/System/Volumes/") {
+        // System volumes
+        "/".to_string()
+    } else {
+        "/".to_string()
+    };
+
+    let output = Command::new("diskutil")
+        .args(&["info", "-plist", &vol_path])
+        .output()
+        .map_err(|e| GitkaError::UsbDetection(format!("Failed to run diskutil: {}", e)))?;
+
+    if !output.status.success() {
+        return Err(GitkaError::UsbDetection(
+            "diskutil command failed".to_string(),
+        ));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let plist: serde_json::Value = serde_json::from_str(&stdout)
+        .map_err(|e| GitkaError::UsbDetection(format!("Failed to parse diskutil plist: {}", e)))?;
+
+    let mount_point = plist["MountPoint"].as_str().unwrap_or("/");
+    let fs_type = plist["FileSystem"].as_str()
+        .or_else(|| plist["Content"].as_str())
+        .unwrap_or("unknown")
+        .to_string();
+    let label = plist["VolumeName"].as_str().map(|s| s.to_string());
+    let protocol = plist["Protocol"].as_str().unwrap_or("");
+    let is_removable = protocol == "USB" || protocol == "FireWire" || protocol == "Thunderbolt";
+
+    let (total_space, free_space) = get_disk_space_statvfs_macos(
+        &PathBuf::from(mount_point)
+    ).unwrap_or((0, 0));
+
+    Ok(DriveInfo {
+        mount_point: PathBuf::from(mount_point),
+        fs_type,
+        total_space,
+        free_space,
+        is_removable,
+        label,
+    })
 }
 
 // ============================================================================
@@ -460,9 +889,21 @@ pub fn validate_removable(path: &Path) -> Result<bool> {
         Ok(false)
     }
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
     {
-        // For non-Linux, just check if writable
+        // On macOS, check if the path is on /Volumes and whether diskutil reports it as external
+        validate_removable_macos(path)
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        // On Windows, check drive type via PowerShell
+        validate_removable_windows(path)
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+    {
+        // For unsupported platforms, just check if writable
         Ok(true)
     }
 }
@@ -479,7 +920,12 @@ pub fn get_drive_info(path: &Path) -> Result<DriveInfo> {
         get_drive_info_windows(path)
     }
 
-    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+    #[cfg(target_os = "macos")]
+    {
+        get_drive_info_macos(path)
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
     {
         Err(GitkaError::UsbDetection(
             "Unsupported platform".to_string(),
