@@ -180,7 +180,7 @@ fn dirty_log_path(config: &Config) -> PathBuf {
 }
 
 /// Get current Unix timestamp
-fn current_timestamp() -> u64 {
+pub fn current_timestamp() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -221,7 +221,7 @@ pub fn dirty_log_summary(config: &Config) -> String {
 }
 
 /// Format a duration in seconds to a human-readable string
-fn format_age(secs: u64) -> String {
+pub fn format_age(secs: u64) -> String {
     if secs < 60 {
         format!("{}s", secs)
     } else if secs < 3600 {

@@ -945,6 +945,7 @@ fn cmd_sync(config: &Config, repos: Option<Vec<String>>) -> Result<()> {
 fn cmd_status(config: &Config, repos: Option<Vec<String>>) -> Result<()> {
     let repo_manager = repo::RepoManager::new(config.clone());
     let all_repos = repo_manager.list_repos()?;
+    let dirty_log = dirty::DirtyLog::load(config);
 
     let repos_to_show: Vec<&repo::RepoMeta> = match repos {
         Some(names) => all_repos.iter()
@@ -954,17 +955,62 @@ fn cmd_status(config: &Config, repos: Option<Vec<String>>) -> Result<()> {
     };
 
     println!("Repository Status:");
-    println!("{:<30} {:<15} {:<15} {:<20}", "Name", "State", "Last Synced", "Archive Size");
-    println!("{}", "-".repeat(80));
+    println!("{:<30} {:<15} {:<15} {:<20} {}", "Name", "State", "Last Synced", "Archive Size", "Session");
+    println!("{}", "-".repeat(95));
 
     for repo in repos_to_show {
+        let session_info = if let Some(entry) = dirty_log.entries.get(&repo.name) {
+            let age = dirty::format_age(dirty::current_timestamp().saturating_sub(entry.timestamp));
+            let action = match entry.action {
+                dirty::DirtyAction::Unlock => "unlocked",
+                dirty::DirtyAction::Serve => "serving",
+                dirty::DirtyAction::Modified => "modified",
+            };
+            let commits = if entry.commits.len() > 1 {
+                format!(" ({} commits)", entry.commits.len() - 1)
+            } else {
+                String::new()
+            };
+            let files = if !entry.files_touched.is_empty() {
+                format!(", {} files", entry.files_touched.len())
+            } else {
+                String::new()
+            };
+            format!("{} {}{}{}", action, age, commits, files)
+        } else {
+            String::new()
+        };
+
         println!(
-            "{:<30} {:<15} {:<15} {:<20}",
+            "{:<30} {:<15} {:<15} {:<20} {}",
             repo.name,
             format!("{:?}", repo.state),
             repo.last_synced.as_deref().unwrap_or("never"),
-            format!("{:.1} MB", repo.archive_size as f64 / 1_048_576.0)
+            format!("{:.1} MB", repo.archive_size as f64 / 1_048_576.0),
+            session_info,
         );
+    }
+
+    // Show dirty log summary
+    if !dirty_log.is_empty() {
+        println!("\n⚠ {} repo(s) have active sessions:", dirty_log.entries.len());
+        for (name, entry) in &dirty_log.entries {
+            let age = dirty::format_age(dirty::current_timestamp().saturating_sub(entry.timestamp));
+            let action = match entry.action {
+                dirty::DirtyAction::Unlock => "unlocked",
+                dirty::DirtyAction::Serve => "serving",
+                dirty::DirtyAction::Modified => "modified",
+            };
+            let detail = if !entry.files_touched.is_empty() {
+                format!(", {} files touched", entry.files_touched.len())
+            } else if entry.commits.len() > 1 {
+                format!(", {} commits", entry.commits.len() - 1)
+            } else {
+                String::new()
+            };
+            println!("  {} — {} ({}{})", name, action, age, detail);
+        }
+        println!("\n  Run `gitka lock <repo>` to recompress and close session.");
     }
 
     Ok(())
@@ -1031,9 +1077,19 @@ fn cmd_unlock(config: &Config, repo_name: &str) -> Result<()> {
     meta.extraction_path = Some(extraction_path.clone());
     repo_manager.save_meta(&meta)?;
 
-    // Record in dirty log
+    // Record in dirty log + audit trail (HEAD commit before session)
     let mut dirty_log = dirty::DirtyLog::load(config);
     dirty_log.record_unlock(repo_name);
+
+    // Record the HEAD commit hash as the session baseline
+    if let Ok(repo) = git2::Repository::open(&extraction_path) {
+        if let Ok(head) = repo.head() {
+            if let Some(oid) = head.target() {
+                dirty_log.record_commit(repo_name, &oid.to_string());
+            }
+        }
+    }
+
     dirty_log.save(config)?;
 
     println!("✓ Repo extracted to {}", extraction_path.display());
@@ -1057,6 +1113,74 @@ fn cmd_lock(config: &Config, repo_name: &str) -> Result<()> {
 
     let extraction_path = meta.extraction_path
         .ok_or_else(|| GitkaError::Extraction(format!("No extraction path for {}", repo_name)))?;
+
+    // Audit trail: record new HEAD and changed files before recompression
+    let mut dirty_log = dirty::DirtyLog::load(config);
+    let mut session_summary = Vec::new();
+
+    if let Ok(repo) = git2::Repository::open(&extraction_path) {
+        // Record new HEAD
+        if let Ok(head) = repo.head() {
+            if let Some(oid) = head.target() {
+                let new_hash = oid.to_string();
+                dirty_log.record_commit(repo_name, &new_hash);
+
+                // Compare with baseline to find new commits
+                if let Some(entry) = dirty_log.entries.get(repo_name) {
+                    if let Some(baseline) = entry.commits.first() {
+                        if baseline != &new_hash {
+                            // Count new commits
+                            if let Ok(base_oid) = git2::Oid::from_str(baseline) {
+                                if let Ok(walker) = repo.revwalk() {
+                                    let mut revwalk = walker;
+                                    revwalk.set_sorting(git2::Sort::TIME).ok();
+                                    revwalk.push(oid).ok();
+                                    revwalk.hide(base_oid).ok();
+
+                                    let new_commits: Vec<String> = revwalk
+                                        .filter_map(|r| r.ok())
+                                        .filter_map(|oid| {
+                                            repo.find_commit(oid).ok().map(|c| {
+                                                let summary = c.summary().unwrap_or("");
+                                                format!("{} {}", &oid.to_string()[..8], summary)
+                                            })
+                                        })
+                                        .collect();
+
+                                    if !new_commits.is_empty() {
+                                        dirty_log.record_modified(repo_name);
+                                        session_summary = new_commits;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Record touched files via diff
+        if let Ok(head) = repo.head() {
+            if let Some(oid) = head.target() {
+                if let Ok(commit) = repo.find_commit(oid) {
+                    if let Ok(tree) = commit.tree() {
+                        let mut diff_opts = git2::DiffOptions::new();
+                        if let Ok(diff) = repo.diff_tree_to_workdir(Some(&tree), Some(&mut diff_opts)) {
+                            for delta_idx in 0..diff.deltas().len() {
+                                if let Some(delta) = diff.deltas().nth(delta_idx) {
+                                    if let Some(path) = delta.new_file().path() {
+                                        dirty_log.record_file_touched(repo_name, &path.to_string_lossy());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    dirty_log.save(config)?;
 
     // Recompress
     let archive_path = config.archive_dir().join(format!("{}.gitka.zst", repo_name));
@@ -1111,6 +1235,16 @@ fn cmd_lock(config: &Config, repo_name: &str) -> Result<()> {
 
     println!("✓ Repo locked and recompressed");
     println!("  Archive: {} ({:.1} MB)", archive_path.display(), new_size as f64 / 1_048_576.0);
+
+    // Show session audit trail
+    if !session_summary.is_empty() {
+        println!("\n  📝 Session audit trail ({} new commit(s)):", session_summary.len());
+        for commit in &session_summary {
+            println!("    • {}", commit);
+        }
+    } else {
+        println!("\n  📝 No new commits during this session");
+    }
 
     Ok(())
 }
