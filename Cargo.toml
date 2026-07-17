@@ -24,6 +24,9 @@ zstd = "0.13"
 # Git operations
 git2 = "0.19"
 
+# OpenSSL vendored for cross-compilation (builds from source, no system libs needed)
+openssl = { version = "0.10", features = ["vendored"] }
+
 # Error handling
 anyhow = "1.0"
 thiserror = "1.0"
