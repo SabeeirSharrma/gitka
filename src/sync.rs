@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use crate::config::Config;
 use crate::error::{GitkaError, Result};
 use crate::repo::{RepoMeta, RepoState};
@@ -50,7 +52,7 @@ pub fn sync_repo(config: &Config, repo_name: &str) -> Result<SyncStatus> {
 
     let remote_branch = repo.find_branch("origin/HEAD", git2::BranchType::Remote)
         .map_err(|e| GitkaError::Git(e))?;
-    let remote_head = remote_branch.get().clone();
+    let remote_head = remote_branch.get();
 
     let local_oid = local_head.target()
         .ok_or_else(|| GitkaError::Git(git2::Error::from_str("No local HEAD")))?;
@@ -113,13 +115,13 @@ fn attempt_merge(
     // Get the commits
     let local_commit = repo.find_commit(local_oid)
         .map_err(|e| GitkaError::Git(e))?;
-    let remote_commit = repo.find_commit(remote_oid)
+    let _remote_commit = repo.find_commit(remote_oid)
         .map_err(|e| GitkaError::Git(e))?;
     let base_commit = repo.find_commit(merge_base)
         .map_err(|e| GitkaError::Git(e))?;
 
     // Try to merge (takes 2 commits and an optional ancestor)
-    let mut index = repo.merge_commits(&base_commit, &local_commit, None)
+    let index = repo.merge_commits(&base_commit, &local_commit, None)
         .map_err(|e| GitkaError::Git(e))?;
 
     // Check for conflicts
@@ -215,7 +217,7 @@ pub fn check_sync_status(config: &Config, repo_name: &str) -> Result<SyncStatus>
         }
     };
 
-    let remote_head = remote_branch.get().clone();
+    let remote_head = remote_branch.get();
 
     let local_oid = local_head.target()
         .ok_or_else(|| GitkaError::Git(git2::Error::from_str("No local HEAD")))?;

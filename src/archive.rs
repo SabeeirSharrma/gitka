@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use std::path::{Path, PathBuf};
 
 use crate::config::CompressionBackend;
@@ -16,6 +18,7 @@ pub const COMPRESSION_ZSTD: u8 = 0x01;
 
 /// Archive header structure (12 bytes)
 #[repr(C, packed)]
+#[derive(Clone)]
 pub struct ArchiveHeader {
     /// Magic bytes: "GITKA"
     pub magic: [u8; 5],

@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -280,7 +282,7 @@ pub fn clone_repo(
     repo: &RemoteRepo,
     target_dir: &Path,
     auth: &AuthMethod,
-    shallow: bool,
+    _shallow: bool,
 ) -> Result<PathBuf> {
     let clone_url = match auth {
         AuthMethod::Token(token) => {
@@ -317,7 +319,7 @@ pub fn fetch_repo(repo_path: &Path, auth: &AuthMethod) -> Result<()> {
     // Update remote URL with authentication if needed
     if let AuthMethod::Token(token) = auth {
         let url = remote.url().unwrap_or("").to_string();
-        let authenticated_url = url
+        let _authenticated_url = url
             .replace("https://", &format!("https://x-access-token:{}@", token));
         // Note: git2 Remote doesn't have set_url, so we'll use the URL with token directly
         // This is a limitation - we may need to use git2's credential callback instead

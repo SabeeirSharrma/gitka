@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use std::path::Path;
 
 use crate::config::{CompressionConfig, CompressionTier};
@@ -85,10 +87,6 @@ pub fn compress_directory(
     let mut encoder = Encoder::new(file, level)
         .map_err(|e| GitkaError::Compression(format!("Failed to create encoder: {}", e)))?;
 
-    // TODO: Implement proper tar-like archiving
-    // For now, just compress a single file as proof of concept
-    let mut total_bytes = 0u64;
-
     // Walk the directory and compress files
     for entry in walkdir::WalkDir::new(source_dir) {
         let entry = entry.map_err(|e| GitkaError::Compression(format!("Walk error: {}", e)))?;
@@ -117,8 +115,6 @@ pub fn compress_directory(
                 .map_err(|e| GitkaError::Compression(format!("Write error: {}", e)))?;
             encoder.write_all(&buffer)
                 .map_err(|e| GitkaError::Compression(format!("Write error: {}", e)))?;
-
-            total_bytes += buffer.len() as u64;
         }
     }
 
@@ -140,7 +136,7 @@ pub fn decompress_directory(
     target_dir: &Path,
 ) -> Result<u64> {
     use std::fs::File;
-    use std::io::{Read, Write};
+    use std::io::Read;
     use zstd::stream::read::Decoder;
 
     let file = File::open(archive_path)

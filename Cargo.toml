@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 authors = ["Sabeeir Sharrma"]
 description = "A Ventoy-inspired tool that creates compressed, physical-media local copies of your GitHub/GitFlare repos"
-license = "MIT OR Apache-2.0"
+license = "GPL-3.0"
 
 [[bin]]
 name = "gitka"
