@@ -3,3 +3,8 @@
 *.saiarc
 .gitka/
 extract/
+*.swp
+*.swo
+*~
+.DS_Store
+gitka-spec.md
