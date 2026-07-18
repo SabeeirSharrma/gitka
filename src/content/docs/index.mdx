@@ -1,40 +1,52 @@
 ---
-title: Welcome to Starlight
-description: Get started building your docs site with Starlight.
-template: splash # Remove or comment out this line to display the site sidebar on this page.
+title: Gitka
+description: Languages that just talk to each other. No API. No middleman.
+template: splash
 hero:
-  tagline: Congrats on setting up a new Starlight project!
-  image:
-    file: ../../assets/houston.webp
+  tagline: Write functions in Rust, Java, or Python — then call them from JavaScript as if they were normal async functions. No REST APIs, no JSON schemas, no glue code.
   actions:
-    - text: Example Guide
-      link: /guides/example/
+    - text: Get Started
+      link: /gitka/guides/getting-started/
       icon: right-arrow
-    - text: Read the Starlight docs
-      link: https://starlight.astro.build
+    - text: View on GitHub
+      link: https://github.com/sabeeirsharrma/gitka
       icon: external
       variant: minimal
 ---
 
 import { Card, CardGrid } from '@astrojs/starlight/components';
 
-## Next steps
+## Why Transit?
 
-<CardGrid stagger>
-	<Card title="Update content" icon="pencil">
-		Edit `src/content/docs/index.mdx` to see this page change.
+<CardGrid>
+	<Card title="No Glue Code" icon="puzzle">
+		Write your logic in the language that fits the job. Transit handles serialization, process management, and function discovery automatically.
 	</Card>
-	<Card title="Change page layout" icon="document">
-		Delete `template: splash` in `src/content/docs/index.mdx` to display a
-		sidebar on this page.
+	<Card title="Zero Changes" icon="document">
+		The scanner discovers your existing public functions automatically. No decorators, no annotations, no source modifications.
 	</Card>
-	<Card title="Add new content" icon="add-document">
-		Add Markdown or MDX files to `src/content/docs` to create new pages.
+	<Card title="Optimal Transport" icon="rocket">
+		Rust runs in-process via N-API for zero overhead. Java and Python run as resident processes with a binary TCP protocol.
 	</Card>
-	<Card title="Configure your site" icon="setting">
-		Edit your `sidebar` and other config in `astro.config.mjs`.
-	</Card>
-	<Card title="Read the docs" icon="open-book">
-		Learn more in [the Starlight Docs](https://starlight.astro.build/).
+	<Card title="Works Everywhere" icon="laptop">
+		Supports Rust, Java, Python, and JavaScript/TypeScript. Works on Linux, macOS, and Windows.
 	</Card>
 </CardGrid>
+
+## Quick Taste
+
+```js
+import { transit } from "transit"
+import { resolve } from "node:path"
+
+const __dirname = import.meta.dirname
+
+const rs = transit.rust(resolve(__dirname, "./rust"))
+const jv = transit.java(resolve(__dirname, "./java/src/main/java"))
+const py = transit.python(resolve(__dirname, "./python"))
+
+// Call functions across language boundaries
+const rustResult = await rs.processFile({ id: "job-001", bytes: [72, 101, 108] })
+const javaResult = await jv.handleSpecialized(rustResult)
+const pythonResult = await py.analyzeData(javaResult)
+```

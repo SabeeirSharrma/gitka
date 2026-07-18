@@ -4,21 +4,45 @@ import starlight from '@astrojs/starlight';
 
 // https://astro.build/config
 export default defineConfig({
+	site: 'https://sabeeirsharrma.github.io',
+	base: '/gitka',
 	integrations: [
 		starlight({
-			title: 'My Docs',
-			social: [{ icon: 'github', label: 'GitHub', href: 'https://github.com/withastro/starlight' }],
+			title: 'Gitka',
+			tagline: 'Languages that just talk to each other. No API. No middleman.',
+			customCss: ['./src/styles/custom.css'],
+			components: {
+				Footer: './src/components/Footer.astro',
+			},
+			social: [
+				{ icon: 'github', label: 'GitHub', href: 'https://github.com/sabeeirsharrma/gitka' },
+			],
 			sidebar: [
 				{
-					label: 'Guides',
+					label: 'Start Here',
 					items: [
-						// Each item here is one entry in the navigation menu.
-						{ label: 'Example Guide', slug: 'guides/example' },
+						{ label: 'Introduction', slug: 'guides/getting-started' },
+					],
+				},
+				{
+					label: 'Concepts',
+					items: [
+						{ label: 'Architecture', slug: 'reference/architecture' },
+						{ label: 'Export Tiers', slug: 'reference/export-tiers' },
+						{ label: 'Binary Protocol', slug: 'reference/binary-protocol' },
 					],
 				},
 				{
 					label: 'Reference',
-					items: [{ autogenerate: { directory: 'reference' } }],
+					items: [
+						{ label: 'API Reference', slug: 'reference/api-reference' },
+					],
+				},
+				{
+					label: 'Contributing',
+					items: [
+						{ label: 'Contributing Guide', slug: 'guides/contributing' },
+					],
 				},
 			],
 		}),

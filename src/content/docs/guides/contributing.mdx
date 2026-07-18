@@ -1,0 +1,135 @@
+---
+title: Contributing
+description: Development guide for the Transit monorepo.
+---
+
+Development guide for the Transit monorepo.
+
+## Prerequisites
+
+- **Node.js** >= 20
+- **bun** (package manager)
+- **Rust** toolchain (for scanner and native addons)
+- **Java** JDK 21+ (for Java runtime)
+- **Python** 3.10+ (for Python runtime)
+
+## Repository Structure
+
+```
+transit/
+  packages/
+    transit-js/                 # Public API (TypeScript → dist/index.js)
+    transit-scanner/            # Rust tree-sitter scanner (native addon)
+    transit-schema/             # Shared types and config (TypeScript)
+    transit-rust-runtime/       # napi-rs bridge (Rust)
+    transit-java-runtime/       # Java TCP server (Java)
+    transit-java-runtime-js/    # Java bridge client (TypeScript)
+    transit-py-runtime/         # Python TCP server (Python)
+    transit-python-runtime-js/  # Python bridge client (TypeScript)
+    transit-codegen/            # Code generation (TypeScript)
+  cli/
+    transit-cli/                # CLI tool — init, dev, build, start
+  examples/
+    js-rust-java-demo/          # Working demo
+  docs/                         # Documentation
+```
+
+## Building
+
+### Install all dependencies
+
+```bash
+bun install
+```
+
+### Build the scanner (Rust native addon)
+
+```bash
+cd packages/transit-scanner
+cargo build --release
+cp target/release/libtransit_scanner.so index.node
+```
+
+### Build transit-js
+
+```bash
+cd packages/transit-js
+bun run build
+```
+
+### Build the CLI
+
+```bash
+cd cli/transit-cli
+bun run build
+```
+
+### Build Java classes
+
+```bash
+cd packages/transit-java-runtime
+javac -d build src/main/java/transit/java/*.java
+```
+
+### Build the Rust demo addon
+
+```bash
+cd examples/js-rust-java-demo/rust
+cargo build --release
+cp target/release/libtransit_demo.so index.node
+```
+
+## Testing
+
+### Quick smoke test
+
+```bash
+timeout 15 node --input-type=module -e "
+import { transit } from './packages/transit-js/dist/index.js';
+import { resolve } from 'node:path';
+
+const rs = transit.rust(resolve('examples/js-rust-java-demo/rust'));
+const jv = transit.java(resolve('packages/transit-java-runtime/src/main/java'));
+
+const rustResult = await rs.processGeneral({ id: 'test', bytes: [1,2,3], priority: 1 });
+console.log('Rust:', rustResult);
+
+const javaResult = await jv.processSpecialized({ id: 'test', bytes: [1,2,3] });
+console.log('Java:', javaResult);
+
+await jv._bridge.stop();
+process.exit(0);
+"
+```
+
+### Python smoke test
+
+```bash
+timeout 15 node --input-type=module -e "
+import { transit } from './packages/transit-js/dist/index.js';
+import { resolve } from 'node:path';
+
+const py = transit.python(resolve('packages/transit-py-runtime'));
+
+const result = await py.processData({ items: [1, 2, 3] });
+console.log('Python:', result);
+
+await py._bridge.stop();
+process.exit(0);
+"
+```
+
+## Code Style
+
+- TypeScript for all JS packages
+- Rust follows standard `rustfmt` conventions
+- Java follows standard conventions
+- Python follows PEP 8
+
+## Pull Requests
+
+1. Fork the repository
+2. Create a feature branch
+3. Make your changes
+4. Run the smoke tests
+5. Submit a PR with a clear description
