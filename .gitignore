@@ -23,5 +23,4 @@ pnpm-debug.log*
 .DS_Store
 
 # lock files
-package-lock.json
 **.lock
