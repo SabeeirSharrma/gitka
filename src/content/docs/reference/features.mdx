@@ -1,0 +1,48 @@
+---
+title: Advanced Features
+description: Gitka advanced features
+---
+
+# Advanced Features
+
+## Volume Splitting
+
+Split archives into fixed-size parts. Useful for burning to CD/DVD or working around FAT32's 4 GB file size limit.
+
+```bash
+# Enable during init (4 GB parts for FAT32)
+gitka init --target /mnt/usb --volume-size 4096
+
+# Or enable via config
+gitka config --set compression.volume_splitting.size_mb=700  # CD-sized parts
+gitka config --set compression.volume_splitting.size_mb=4096  # FAT32 limit
+gitka config --set compression.volume_splitting.size_mb=off   # disable
+```
+
+When enabled, archives are split across multiple files:
+```
+repos/archive/my-project.gitka.zst      # Part 1 (primary)
+repos/archive/my-project.gitka.zst.002  # Part 2
+repos/archive/my-project.gitka.zst.003  # Part 3 (if needed)
+```
+
+All operations automatically detect and handle multi-volume archives.
+
+## Cross-Repo Deduplication
+
+When multiple repos share common files (e.g., shared libraries, node_modules), dedup saves space by storing each unique content block only once.
+
+```bash
+# Enable during init
+gitka init --target /mnt/usb --dedup
+
+# Or enable/disable via config
+gitka config --set compression.dedup=true
+gitka config --set compression.dedup=false
+```
+
+Dedup hashes each file's content with SHA-256 before compression. If the content already exists, only a reference is written.
+
+## Encryption & Redundancy
+
+Gitka also supports optional **AES-256-GCM encryption** for archives and **recovery records** (par2) for protection against disk corruption. Check configuration to enable these features.

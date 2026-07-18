@@ -1,12 +1,12 @@
 ---
 title: Gitka
-description: Languages that just talk to each other. No API. No middleman.
+description: A Ventoy-inspired tool that creates compressed, physical-media local copies of your Git repos.
 template: splash
 hero:
-  tagline: Write functions in Rust, Java, or Python — then call them from JavaScript as if they were normal async functions. No REST APIs, no JSON schemas, no glue code.
+  tagline: Offline commits, aggressive compression, and LAN sharing for all your GitHub/GitFlare repos. Keep your projects safe on physical media.
   actions:
     - text: Get Started
-      link: /gitka/guides/getting-started/
+      link: /gitka/guides/introduction/
       icon: right-arrow
     - text: View on GitHub
       link: https://github.com/sabeeirsharrma/gitka
@@ -16,37 +16,19 @@ hero:
 
 import { Card, CardGrid } from '@astrojs/starlight/components';
 
-## Why Transit?
+## Why Gitka?
 
 <CardGrid>
-	<Card title="No Glue Code" icon="puzzle">
-		Write your logic in the language that fits the job. Transit handles serialization, process management, and function discovery automatically.
+	<Card title="Offline Commits" icon="document">
+		Extract a repo temporarily, let you commit offline, and recompress when you're done. Perfect for working completely off-the-grid.
 	</Card>
-	<Card title="Zero Changes" icon="document">
-		The scanner discovers your existing public functions automatically. No decorators, no annotations, no source modifications.
+	<Card title="Aggressive Compression" icon="rocket">
+		Automatically selects zstd tiers based on available space and deduplicates common blobs across multiple repositories.
 	</Card>
-	<Card title="Optimal Transport" icon="rocket">
-		Rust runs in-process via N-API for zero overhead. Java and Python run as resident processes with a binary TCP protocol.
+	<Card title="LAN Sharing" icon="laptop">
+		Serve a repository directly to others on your local network via GitFlare without needing internet access.
 	</Card>
-	<Card title="Works Everywhere" icon="laptop">
-		Supports Rust, Java, Python, and JavaScript/TypeScript. Works on Linux, macOS, and Windows.
+	<Card title="Resilient & Secure" icon="puzzle">
+		Optional par2 recovery records for corruption protection, AES-256-GCM encryption, and crash resilience with auto-recompression.
 	</Card>
 </CardGrid>
-
-## Quick Taste
-
-```js
-import { transit } from "transit"
-import { resolve } from "node:path"
-
-const __dirname = import.meta.dirname
-
-const rs = transit.rust(resolve(__dirname, "./rust"))
-const jv = transit.java(resolve(__dirname, "./java/src/main/java"))
-const py = transit.python(resolve(__dirname, "./python"))
-
-// Call functions across language boundaries
-const rustResult = await rs.processFile({ id: "job-001", bytes: [72, 101, 108] })
-const javaResult = await jv.handleSpecialized(rustResult)
-const pythonResult = await py.analyzeData(javaResult)
-```
