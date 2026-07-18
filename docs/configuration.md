@@ -1,0 +1,43 @@
+# Configuration
+
+Gitka uses a TOML config file located at `<target>/.gitka/gitka.toml`.
+
+## Example Config
+
+```toml
+[source]
+github_username = "your-username"
+# auth_token = "ghp_xxx"  # optional, for private repos
+
+[target]
+path = "/mnt/usb"
+mode = "removable"
+
+[compression]
+backend = "zstd"
+tier = "auto"                    # auto, low, medium, high
+dictionary_size_mb = 32
+dedup = true                     # cross-repo deduplication
+# volume_splitting = { size_mb = 4096 }  # uncomment to enable splitting
+
+[extraction]
+target = "usb"   # or "host" to extract to host computer
+
+[toggles]
+clear_after_lock = true
+verify_after_sync = true
+encryption = false
+recovery_records = false
+```
+
+## CLI Configuration Management
+
+You can view or edit config directly from the command line:
+
+```bash
+gitka config                                   # show full config
+gitka config --get source.github_username      # get a value
+gitka config --set source.github_username=me   # set a value
+gitka config --get compression.dedup           # check dedup status
+gitka config --get compression.volume_splitting.size_mb  # check split size
+```

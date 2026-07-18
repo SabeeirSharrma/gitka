@@ -1,0 +1,24 @@
+# Installation
+
+Gitka is easy to install via our install script. It builds from source and places the binary in `/usr/local/bin`.
+
+## Requirements
+- Rust toolchain (cargo) for building from source.
+- Supported OS: Linux, macOS, Windows.
+
+## Quick Install (Linux/macOS)
+
+```bash
+curl -sSf https://raw.githubusercontent.com/SabeeirSharrma/gitka/refs/heads/main/install.sh | bash
+```
+
+## Platform specific features
+
+| Feature | Linux | macOS | Windows |
+|---|---|---|---|
+| USB detection | lsblk + /sys/block | diskutil | PowerShell WMI |
+| Drive formatting | mkfs | diskutil | diskpart |
+| Compression | zstd | zstd | zstd |
+| Volume splitting | ✅ | ✅ | ✅ |
+| Cross-repo dedup | ✅ | ✅ | ✅ |
+| GitFlare serving | ✅ | ✅ | ✅ |
