@@ -2636,10 +2636,29 @@ fn cmd_update(check_only: bool, no_gui: bool, json: bool) -> Result<()> {
 
     println!("\nRebuilding CLI from source...");
 
-    // Find the gitka repo source directory
+    // Build dir — cleaned up on all exit paths
     let repo_url = "https://github.com/SabeeirSharrma/gitka.git";
     let build_dir = std::env::temp_dir().join(format!("gitka-update-{}", &current_version));
 
+    // Remove any stale build dir from a previous failed update
+    let _ = std::fs::remove_dir_all(&build_dir);
+
+    let result = do_update(&build_dir, repo_url, current_version, latest_version, no_gui);
+
+    // Always clean up the build dir
+    std::fs::remove_dir_all(&build_dir).ok();
+
+    result
+}
+
+/// Inner update logic — separated so build_dir cleanup always runs in caller
+fn do_update(
+    build_dir: &Path,
+    repo_url: &str,
+    current_version: &str,
+    latest_version: &str,
+    no_gui: bool,
+) -> Result<()> {
     // Clone fresh copy
     println!("  Cloning repository...");
     let clone_status = std::process::Command::new("git")
@@ -2655,12 +2674,11 @@ fn cmd_update(check_only: bool, no_gui: bool, json: bool) -> Result<()> {
     println!("  Building CLI...");
     let cli_build = std::process::Command::new("cargo")
         .args(["build", "--release", "--bin", "gitka"])
-        .current_dir(&build_dir)
+        .current_dir(build_dir)
         .status()
         .map_err(|e| GitkaError::Config(format!("Failed to run cargo: {}", e)))?;
 
     if !cli_build.success() {
-        std::fs::remove_dir_all(&build_dir).ok();
         return Err(GitkaError::Config("CLI build failed".to_string()));
     }
 
@@ -2691,7 +2709,7 @@ fn cmd_update(check_only: bool, no_gui: bool, json: bool) -> Result<()> {
             // Try to install cargo-tauri if not present
             let tauri_check = std::process::Command::new("cargo")
                 .args(["tauri", "--version"])
-                .current_dir(&build_dir)
+                .current_dir(build_dir)
                 .status();
 
             if tauri_check.is_err() || !tauri_check.unwrap().success() {
@@ -2705,18 +2723,15 @@ fn cmd_update(check_only: bool, no_gui: bool, json: bool) -> Result<()> {
                     println!("  ⚠ Could not install tauri-cli. GUI not updated.");
                     println!("  Install manually: cargo install tauri-cli --locked");
                 } else {
-                    build_and_install_gui(&build_dir, install_dir)?;
+                    build_and_install_gui(build_dir, install_dir)?;
                 }
             } else {
-                build_and_install_gui(&build_dir, install_dir)?;
+                build_and_install_gui(build_dir, install_dir)?;
             }
         } else {
             println!("  ⚠ src-tauri not found in repository. GUI not updated.");
         }
     }
-
-    // Clean up
-    std::fs::remove_dir_all(&build_dir).ok();
 
     println!("\n✓ Update complete! (v{} → v{})", current_version, latest_version);
     println!("  Restart any running gitka instances to use the new version.");
