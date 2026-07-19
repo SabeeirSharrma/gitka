@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Gitka</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="https://unpkg.com/@tauri-apps/api@2/dist/tauri.js" defer></script>
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <!-- Sidebar -->
+  <aside class="sidebar">
+    <div class="sidebar-header">
+      <svg class="logo" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M12 2L2 7l10 5 10-5-10-5z"/>
+        <path d="M2 17l10 5 10-5"/>
+        <path d="M2 12l10 5 10-5"/>
+      </svg>
+      <h1>Gitka</h1>
+    </div>
+    <nav>
+      <button class="nav-btn active" data-view="dashboard">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
+        Dashboard
+      </button>
+      <button class="nav-btn" data-view="repos">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+        Repositories
+      </button>
+      <button class="nav-btn" data-view="settings">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        Settings
+      </button>
+    </nav>
+    <div class="sidebar-footer">
+      <div class="version">v0.6.0</div>
+    </div>
+  </aside>
+
+  <!-- Main content -->
+  <main class="main">
+    <!-- Dashboard view -->
+    <section id="view-dashboard" class="view active">
+      <div class="view-header">
+        <h2>Dashboard</h2>
+        <div class="header-actions">
+          <button class="btn btn-primary" id="btn-sync-all">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+            Sync All
+          </button>
+          <button class="btn btn-secondary" id="btn-scan">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+            Scan
+          </button>
+        </div>
+      </div>
+
+      <!-- Stats cards -->
+      <div class="stats-grid">
+        <div class="stat-card">
+          <div class="stat-value" id="stat-total">0</div>
+          <div class="stat-label">Total Repos</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value" id="stat-archived">0</div>
+          <div class="stat-label">Archived</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value" id="stat-extracted">0</div>
+          <div class="stat-label">Extracted</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value" id="stat-size">0 MB</div>
+          <div class="stat-label">Total Archive Size</div>
+        </div>
+      </div>
+
+      <!-- Repo list -->
+      <div class="repo-list" id="dashboard-repos">
+        <div class="empty-state">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+          <p>No repositories found. Run <code>gitka scan</code> or import a repo.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- Repos view -->
+    <section id="view-repos" class="view">
+      <div class="view-header">
+        <h2>Repositories</h2>
+        <div class="header-actions">
+          <button class="btn btn-primary" id="btn-import">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+            Import Repo
+          </button>
+        </div>
+      </div>
+      <div class="repo-grid" id="repo-grid">
+        <div class="empty-state">
+          <p>No repositories to display.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- Settings view -->
+    <section id="view-settings" class="view">
+      <div class="view-header">
+        <h2>Settings</h2>
+      </div>
+      <div class="settings-content">
+        <div class="setting-group">
+          <h3>Source</h3>
+          <div class="setting-row">
+            <label>GitHub Username</label>
+            <input type="text" id="cfg-github-username" placeholder="your-username">
+          </div>
+          <div class="setting-row">
+            <label>Auth Token</label>
+            <input type="password" id="cfg-auth-token" placeholder="ghp_xxx (optional)">
+          </div>
+        </div>
+
+        <div class="setting-group">
+          <h3>Compression</h3>
+          <div class="setting-row">
+            <label>Tier</label>
+            <select id="cfg-tier">
+              <option value="auto">Auto</option>
+              <option value="low">Low (fast)</option>
+              <option value="medium">Medium</option>
+              <option value="high">High (best ratio)</option>
+            </select>
+          </div>
+          <div class="setting-row">
+            <label>Dictionary Size (MB)</label>
+            <input type="number" id="cfg-dict-size" value="32" min="1" max="256">
+          </div>
+          <div class="setting-row">
+            <label>Solid Mode</label>
+            <select id="cfg-solid">
+              <option value="per_repo">Per Repo</option>
+              <option value="none">None</option>
+              <option value="full_archive">Full Archive</option>
+            </select>
+          </div>
+          <div class="setting-row">
+            <label>Volume Split Size (MB, 0 = off)</label>
+            <input type="number" id="cfg-volume-size" value="0" min="0">
+          </div>
+          <div class="setting-row">
+            <label>Cross-Repo Dedup</label>
+            <label class="toggle">
+              <input type="checkbox" id="cfg-dedup" checked>
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
+        </div>
+
+        <div class="setting-group">
+          <h3>Features</h3>
+          <div class="setting-row">
+            <label>Encryption (AES-256-GCM)</label>
+            <label class="toggle">
+              <input type="checkbox" id="cfg-encryption">
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
+          <div class="setting-row">
+            <label>Recovery Records (par2)</label>
+            <label class="toggle">
+              <input type="checkbox" id="cfg-recovery">
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
+          <div class="setting-row">
+            <label>Verify After Sync</label>
+            <label class="toggle">
+              <input type="checkbox" id="cfg-verify" checked>
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
+          <div class="setting-row">
+            <label>Clear After Lock</label>
+            <label class="toggle">
+              <input type="checkbox" id="cfg-clear" checked>
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
+        </div>
+
+        <div class="setting-group">
+          <h3>Extraction</h3>
+          <div class="setting-row">
+            <label>Target</label>
+            <select id="cfg-extraction-target">
+              <option value="usb">USB Drive</option>
+              <option value="host">Host Computer</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="setting-actions">
+          <button class="btn btn-primary" id="btn-save-settings">Save Settings</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Status bar -->
+    <footer class="status-bar">
+      <span id="status-text">Ready</span>
+      <span id="status-config"></span>
+    </footer>
+  </main>
+
+  <!-- Modal overlay -->
+  <div class="modal-overlay" id="modal-overlay">
+    <div class="modal" id="modal">
+      <div class="modal-header">
+        <h3 id="modal-title">Confirm</h3>
+        <button class="modal-close" id="modal-close">&times;</button>
+      </div>
+      <div class="modal-body" id="modal-body"></div>
+      <div class="modal-footer" id="modal-footer"></div>
+    </div>
+  </div>
+</body>
+</html>

@@ -1,0 +1,15 @@
+[package]
+name = "gitka-gui"
+version = "0.6.0"
+edition = "2021"
+description = "Gitka GUI — cross-platform dashboard for git repo backups"
+license = "GPL-3.0"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-shell = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
