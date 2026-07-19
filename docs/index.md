@@ -14,6 +14,10 @@ Gitka keeps all your repos compressed on removable media. When you need to work 
 - **Crash resilience** — detects orphaned extractions and recompresses automatically
 - **Volume splitting** — split archives into fixed-size parts for CD/DVD or FAT32 limits
 - **Cross-repo dedup** — share common blobs across repos to save space
+- **Auto-merge** — divergent branches with no conflicts merge on `gitka sync`
+- **Default branch detection** — works for `main`, `master`, `trunk`, or custom defaults
+- **Host-side extraction** — bypass USB space pressure by extracting to host temp dir
+- **Cross-platform GUI** — Tauri-based desktop app, fully offline, mirrors every CLI command
 
 ## Getting Started
 - Check out the [Installation Guide](installation.md)

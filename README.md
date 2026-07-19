@@ -2,13 +2,24 @@
 
 A Ventoy-inspired tool that creates compressed, physical-media (USB/CD) local copies of all your GitHub/GitFlare repos — with offline commit capability and LAN-based sharing.
 
+**v0.6.0** — cross-platform install scripts, auto-merge, recovery-overhead-aware budgets, default branch detection, full GUI parity.
+
 ## Install
+
+**Linux/macOS:**
 
 ```bash
 curl -sSf https://sabeeir.qd.je/gitka/install.sh | bash
 ```
 
-This builds Gitka from source and installs it to `/usr/local/bin`.
+**Windows (PowerShell):**
+
+```powershell
+[Net.ServicePointManager]::SecurityProtocol = 'tls12'
+irm https://sabeeir.qd.je/gitka/install-windows.ps1 | iex
+```
+
+All installers build Gitka from source and place the binary on your PATH.
 
 ## Quick Start
 
@@ -68,6 +79,8 @@ gitka config                             # View/edit config
 gitka import <path>                      # Import a local git repo into backup
 gitka train-dict                         # Train zstd dictionary for better compression
 gitka train-dict --source <dir>         # Train from a specific directory
+gitka auth --token <pat>                # Verify and store a GitHub token
+gitka auth --status                      # Show current GitHub auth status
 ```
 
 ## How It Works
@@ -87,6 +100,23 @@ Gitka keeps all your repos compressed on removable media. When you need to work 
 - **Cross-repo dedup** — share common blobs across repos to save space
 - **FullArchive mode** — compress all repos into a single solid archive stream
 - **Local repo import** — import existing git clones directly into backup
+- **Auto-merge** — divergent branches with no conflicts merge automatically during `gitka sync`
+- **Default branch detection** — `gitka sync` reads `origin/HEAD` instead of hardcoding `main`, so repos on `master`/`trunk`/custom branches work too
+- **Host-side budget check** — when `extraction.target = "host"`, free-space checks use the host disk (not the USB) so you get accurate "tight fit" warnings
+- **Recovery-aware budgeting** — the budget check accounts for ~25% recovery-record overhead so over-budget warnings fire before you run out of space mid-compress
+
+## What's New in v0.6.0
+
+- Cross-platform install scripts (Linux/macOS bash + Windows PowerShell) hosted on gh-pages
+- `gitka auth github` CLI command for managing GitHub auth outside the GUI
+- `gitka usb` CLI command with `--json` output (was GUI-only before)
+- Tauri GUI ships with full CLI parity: setup wizard, import, tools, dashboard
+- GUI is fully offline (Tauri API injected via webview, no CDN)
+- Auto-merge for diverged branches
+- Default branch detection replaces hardcoded `main`
+- Host-side free-space check for host-extraction target
+- Recovery overhead estimated in budget checks
+- `config-schema.toml` companion documentation
 
 ## Wipe and Install
 
@@ -325,13 +355,13 @@ gitka config --get compression.volume_splitting.size_mb  # check split size
 | `gitka init --volume-size <MB>` | Initialize with volume splitting |
 | `gitka init --dedup` | Initialize with cross-repo deduplication |
 | `gitka scan` | Discover repos from source, show budget |
-| `gitka sync` | Clone/fetch repos (incremental — skips untouched repos) |
+| `gitka sync` | Clone/fetch repos (incremental — skips untouched repos, auto-merges on divergence) |
 | `gitka sync --repos a,b` | Sync only the named repos |
 | `gitka status` | Per-repo state, archive sizes, active sessions |
 | `gitka status --json` | Same output as JSON (used by the GUI) |
 | `gitka usb` | List detected removable drives |
 | `gitka usb --json` | Drive list as JSON (used by the GUI) |
-| `gitka unlock <repo>` | Extract for offline commit access |
+| `gitka unlock <repo>` | Extract for offline commit access (budget-aware) |
 | `gitka lock <repo>` | Recompress + close session (shows audit trail) |
 | `gitka serve <repo>` | Serve over LAN via GitFlare |
 | `gitka verify` | Check archive integrity |
@@ -340,7 +370,9 @@ gitka config --get compression.volume_splitting.size_mb  # check split size
 | `gitka import <path>` | Import a local git repo into backup |
 | `gitka train-dict` | Train zstd dictionary for better compression |
 | `gitka train-dict --source <dir>` | Train from a specific sample directory |
-| `gitka gui` | Launch the GUI (prints instructions) |
+| `gitka auth --token <pat>` | Verify and store a GitHub token |
+| `gitka auth --status` | Show current GitHub auth status |
+| `gitka gui` | Launch the GUI (also: bare `gitka` with no subcommand) |
 
 ## Machine-Readable Output
 
