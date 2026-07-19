@@ -164,6 +164,23 @@ pub enum Commands {
         #[arg(long)]
         yes: bool,
     },
+
+    /// Import an existing local git repo into the backup target
+    Import {
+        /// Path to the local git repository to import
+        repo_path: PathBuf,
+
+        /// Optional name for the repo (defaults to directory name)
+        #[arg(short, long)]
+        name: Option<String>,
+    },
+
+    /// Train zstd dictionary for better compression of small files
+    TrainDict {
+        /// Directory of sample files to train from (default: all repos in archive)
+        #[arg(short, long)]
+        source: Option<PathBuf>,
+    },
 }
 
 impl Commands {

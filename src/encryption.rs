@@ -165,6 +165,64 @@ pub fn is_encrypted(file_path: &Path) -> Result<bool> {
     }
 }
 
+/// Encrypt multiple volume parts in-place
+pub fn encrypt_parts(
+    archive_path: &Path,
+    part_files: &[String],
+    key: &EncryptionKey,
+) -> Result<u64> {
+    let mut total_encrypted = 0u64;
+
+    // Get the parent directory
+    let parent = archive_path.parent().unwrap_or(Path::new("."));
+
+    // Determine which files to encrypt
+    let files_to_encrypt: Vec<std::path::PathBuf> = if part_files.len() <= 1 {
+        // Single volume — just encrypt the main archive
+        vec![archive_path.to_path_buf()]
+    } else {
+        // Multi-volume — encrypt each part
+        part_files.iter()
+            .map(|name| parent.join(name))
+            .collect()
+    };
+
+    for file_path in &files_to_encrypt {
+        if file_path.exists() {
+            total_encrypted += encrypt_file(file_path, key)?;
+        }
+    }
+
+    Ok(total_encrypted)
+}
+
+/// Decrypt multiple volume parts in-place
+pub fn decrypt_parts(
+    archive_path: &Path,
+    part_files: &[String],
+    key: &EncryptionKey,
+) -> Result<u64> {
+    let mut total_decrypted = 0u64;
+
+    let parent = archive_path.parent().unwrap_or(Path::new("."));
+
+    let files_to_decrypt: Vec<std::path::PathBuf> = if part_files.len() <= 1 {
+        vec![archive_path.to_path_buf()]
+    } else {
+        part_files.iter()
+            .map(|name| parent.join(name))
+            .collect()
+    };
+
+    for file_path in &files_to_decrypt {
+        if file_path.exists() && is_encrypted(file_path)? {
+            total_decrypted += decrypt_file(file_path, key)?;
+        }
+    }
+
+    Ok(total_decrypted)
+}
+
 /// Derive a key from a password using PBKDF2
 pub fn derive_key(password: &str, salt: &[u8]) -> EncryptionKey {
     use sha2::{Sha256, Digest};

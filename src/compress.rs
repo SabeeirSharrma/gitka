@@ -2,9 +2,13 @@
 
 use std::path::Path;
 
+use crate::archive::{ArchiveHeader, COMPRESSION_ZSTD};
 use crate::config::{CompressionConfig, CompressionTier};
 use crate::dedup::{DedupRef, DedupStore, DEDUP_MARKER, RAW_MARKER};
 use crate::error::{GitkaError, Result};
+
+/// Size of the archive header in bytes
+const HEADER_SIZE: usize = 12;
 
 /// Compression tier thresholds based on free space vs needed space
 pub struct BudgetCheck {
@@ -90,6 +94,68 @@ pub fn compress_directory(
     Ok(result.total_size)
 }
 
+/// Train a zstd dictionary from sample files in a directory
+pub fn train_dictionary(source_dir: &Path, dict_size_mb: u32) -> Result<Vec<u8>> {
+    use std::fs::File;
+    use std::io::Read;
+
+    let max_dict_size = (dict_size_mb as usize) * 1024 * 1024;
+
+    // Collect sample file contents for dictionary training
+    let mut samples: Vec<Vec<u8>> = Vec::new();
+    let mut total_sample_bytes: usize = 0;
+    let max_sample_bytes = max_dict_size * 4; // Sample up to 4x dict size
+
+    for entry in walkdir::WalkDir::new(source_dir)
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_file())
+    {
+        let path = entry.path();
+        // Skip very large files (>10MB) and binary files
+        let metadata = match std::fs::metadata(path) {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        if metadata.len() > 10 * 1024 * 1024 || metadata.len() == 0 {
+            continue;
+        }
+
+        let mut file = match File::open(path) {
+            Ok(f) => f,
+            Err(_) => continue,
+        };
+        let mut buf = Vec::new();
+        if file.read_to_end(&mut buf).is_err() {
+            continue;
+        }
+
+        total_sample_bytes += buf.len();
+        samples.push(buf);
+
+        if total_sample_bytes >= max_sample_bytes {
+            break;
+        }
+    }
+
+    if samples.is_empty() {
+        return Err(GitkaError::Compression(
+            "No suitable files found for dictionary training".to_string(),
+        ));
+    }
+
+    // Train the dictionary
+    let dict = zstd::dict::from_samples(&samples, max_dict_size)
+        .map_err(|e| GitkaError::Compression(format!("Dictionary training failed: {}", e)))?;
+
+    Ok(dict)
+}
+
+/// Load a trained dictionary from disk
+pub fn load_dictionary(dict_path: &Path) -> Option<Vec<u8>> {
+    std::fs::read(dict_path).ok()
+}
+
 /// Compress with full options (volume splitting, dedup)
 pub fn compress_directory_with_options(
     source_dir: &Path,
@@ -108,6 +174,12 @@ pub fn compress_directory_with_options(
     // Determine split size
     let split_bytes = config.volume_splitting.as_ref().map(|vs| vs.size_mb * 1024 * 1024);
 
+    // Load zstd dictionary if available
+    let dict_path = archive_path.parent()
+        .unwrap_or(Path::new("."))
+        .join(".trained.dict");
+    let dictionary = load_dictionary(&dict_path);
+
     // Count files for progress bar
     let file_count = walkdir::WalkDir::new(source_dir)
         .into_iter()
@@ -121,13 +193,23 @@ pub fn compress_directory_with_options(
         .unwrap()
         .progress_chars("#>-"));
 
-    // Create the first part file
+    // Create the first part file and write archive header
     let mut part_number: u32 = 1;
     let mut current_part_path = archive_path.to_path_buf();
-    let file = File::create(&current_part_path)
+    let mut file = File::create(&current_part_path)
         .map_err(|e| GitkaError::Compression(format!("Failed to create archive: {}", e)))?;
-    let mut encoder = Encoder::new(file, level)
-        .map_err(|e| GitkaError::Compression(format!("Failed to create encoder: {}", e)))?;
+
+    // Write the 12-byte archive header (GITKA magic + version + method)
+    let header = ArchiveHeader::new(COMPRESSION_ZSTD);
+    file.write_all(&header.to_bytes())
+        .map_err(|e| GitkaError::Compression(format!("Failed to write archive header: {}", e)))?;
+
+    let mut encoder = match &dictionary {
+        Some(dict) => Encoder::with_dictionary(file, level, dict)
+            .map_err(|e| GitkaError::Compression(format!("Failed to create encoder with dictionary: {}", e)))?,
+        None => Encoder::new(file, level)
+            .map_err(|e| GitkaError::Compression(format!("Failed to create encoder: {}", e)))?,
+    };
     let mut bytes_in_current_part: u64 = 0;
     let mut part_files: Vec<String> = vec![current_part_path.file_name()
         .unwrap_or_default()
@@ -233,8 +315,12 @@ pub fn compress_directory_with_options(
 
                     file = File::create(&current_part_path)
                         .map_err(|e| GitkaError::Compression(format!("Failed to create part {}: {}", part_number, e)))?;
-                    encoder = Encoder::new(file, level)
-                        .map_err(|e| GitkaError::Compression(format!("Failed to create encoder for part {}: {}", part_number, e)))?;
+                    encoder = match &dictionary {
+                        Some(dict) => Encoder::with_dictionary(file, level, dict)
+                            .map_err(|e| GitkaError::Compression(format!("Failed to create encoder for part {}: {}", part_number, e)))?,
+                        None => Encoder::new(file, level)
+                            .map_err(|e| GitkaError::Compression(format!("Failed to create encoder for part {}: {}", part_number, e)))?,
+                    };
                     bytes_in_current_part = 0;
                     part_files.push(new_part_name);
                 }
@@ -300,12 +386,23 @@ pub fn decompress_directory(
 
     let mut total_bytes = 0u64;
 
-    // Open first part
+    // Open first part and skip archive header if present
     let first_part_path = archive_path.parent()
         .unwrap_or(Path::new("."))
         .join(&parts[0]);
-    let file = File::open(&first_part_path)
+    let mut file = File::open(&first_part_path)
         .map_err(|e| GitkaError::Extraction(format!("Failed to open archive: {}", e)))?;
+
+    // Check for and skip the 12-byte archive header
+    let mut header_buf = [0u8; HEADER_SIZE];
+    let has_header = file.read_exact(&mut header_buf).is_ok()
+        && header_buf[0..5] == *crate::archive::ARCHIVE_MAGIC;
+    if has_header {
+        // Validate header
+        let header = ArchiveHeader::from_bytes(&header_buf)?;
+        header.validate()?;
+    }
+
     let mut decoder = Decoder::new(file)
         .map_err(|e| GitkaError::Extraction(format!("Failed to create decoder: {}", e)))?;
 
@@ -451,8 +548,18 @@ pub fn decompress_directory_with_dedup(
     let first_part_path = archive_path.parent()
         .unwrap_or(Path::new("."))
         .join(&parts[0]);
-    let file = File::open(&first_part_path)
+    let mut file = File::open(&first_part_path)
         .map_err(|e| GitkaError::Extraction(format!("Failed to open archive: {}", e)))?;
+
+    // Check for and skip the 12-byte archive header
+    let mut header_buf = [0u8; HEADER_SIZE];
+    let has_header = file.read_exact(&mut header_buf).is_ok()
+        && header_buf[0..5] == *crate::archive::ARCHIVE_MAGIC;
+    if has_header {
+        let header = ArchiveHeader::from_bytes(&header_buf)?;
+        header.validate()?;
+    }
+
     let mut decoder = Decoder::new(file)
         .map_err(|e| GitkaError::Extraction(format!("Failed to create decoder: {}", e)))?;
 
@@ -634,16 +741,27 @@ pub fn verify_archive(archive_path: &Path) -> Result<()> {
 
     let parts = find_archive_parts(archive_path)?;
 
-    for part_name in &parts {
+    for (idx, part_name) in parts.iter().enumerate() {
         let part_path = archive_path.parent()
             .unwrap_or(Path::new("."))
             .join(part_name);
 
-        let file = File::open(&part_path)
+        let mut file = File::open(&part_path)
             .map_err(|e| GitkaError::VerificationFailed(
                 part_path.display().to_string(),
                 format!("Failed to open: {}", e),
             ))?;
+
+        // Skip archive header on first part
+        if idx == 0 {
+            let mut header_buf = [0u8; HEADER_SIZE];
+            if file.read_exact(&mut header_buf).is_ok()
+                && header_buf[0..5] == *crate::archive::ARCHIVE_MAGIC
+            {
+                let header = ArchiveHeader::from_bytes(&header_buf)?;
+                header.validate()?;
+            }
+        }
 
         let mut decoder = Decoder::new(file)
             .map_err(|e| GitkaError::VerificationFailed(

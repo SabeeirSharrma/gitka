@@ -165,6 +165,42 @@ pub fn repair_file(_file_path: &Path, recovery_dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Create recovery records for multiple volume parts
+pub fn create_recovery_parts(
+    archive_path: &Path,
+    part_files: &[String],
+    recovery_dir: &Path,
+    redundancy_percent: u32,
+) -> Result<Vec<RecoveryInfo>> {
+    let mut results = Vec::new();
+    let parent = archive_path.parent().unwrap_or(Path::new("."));
+
+    let files_to_recover: Vec<std::path::PathBuf> = if part_files.len() <= 1 {
+        vec![archive_path.to_path_buf()]
+    } else {
+        part_files.iter()
+            .map(|name| parent.join(name))
+            .collect()
+    };
+
+    for file_path in &files_to_recover {
+        if file_path.exists() {
+            let part_recovery_dir = recovery_dir.join(
+                file_path.file_name()
+                    .unwrap_or_default()
+            );
+            match create_recovery(file_path, &part_recovery_dir, redundancy_percent) {
+                Ok(info) => results.push(info),
+                Err(e) => {
+                    eprintln!("  Warning: Failed to create recovery for {}: {}", file_path.display(), e);
+                }
+            }
+        }
+    }
+
+    Ok(results)
+}
+
 /// Get recovery info for a repo
 pub fn get_recovery_info(config: &Config, repo_name: &str) -> Option<RecoveryInfo> {
     let recovery_dir = config.recovery_dir().join(repo_name);

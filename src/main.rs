@@ -80,6 +80,16 @@ fn main() -> anyhow::Result<()> {
             cmd_wipe(&target, &source, username.as_deref(), token.as_deref(), gitflare_url.as_deref(), filesystem.as_deref(), yes)?;
             return Ok(());
         }
+        Commands::Import { ref repo_path, ref name } => {
+            let (config, _) = load_config(&cli)?;
+            cmd_import(&config, &repo_path, name.as_deref())?;
+            return Ok(());
+        }
+        Commands::TrainDict { ref source } => {
+            let (config, _) = load_config(&cli)?;
+            cmd_train_dict(&config, source.as_deref())?;
+            return Ok(());
+        }
         _ => unreachable!(),
     }
 
@@ -825,7 +835,103 @@ fn cmd_sync(config: &Config, repos: Option<Vec<String>>) -> Result<()> {
 
     let repo_manager = repo::RepoManager::new(config.clone());
 
-    for remote_repo in repos_to_sync {
+    // Check SolidMode: FullArchive compresses all repos into a single stream
+    let is_full_archive = matches!(config.compression.solid, config::SolidMode::FullArchive);
+
+    if is_full_archive && repos_to_sync.len() > 1 {
+        // FullArchive mode: compress all repos into a single archive
+        println!("FullArchive mode: compressing {} repos into a single stream...", repos_to_sync.len());
+
+        // Create a temporary staging directory
+        let staging_dir = std::env::temp_dir().join("gitka-full-archive-staging");
+        if staging_dir.exists() {
+            std::fs::remove_dir_all(&staging_dir)?;
+        }
+        std::fs::create_dir_all(&staging_dir)?;
+
+        // Clone/fetch each repo into the staging directory
+        for remote_repo in &repos_to_sync {
+            let repo_staging = staging_dir.join(&remote_repo.name);
+            let local_meta = repo_manager.load_meta(&remote_repo.name).ok();
+
+            if let Some(meta) = local_meta {
+                if meta.state == repo::RepoState::Archived {
+                    println!("  Skipping {} (archived, use `gitka unlock` first)", remote_repo.name);
+                    continue;
+                }
+                if let Some(extraction_path) = &meta.extraction_path {
+                    // Copy extracted repo to staging
+                    std::fs::copy(extraction_path, &repo_staging)?;
+                }
+            } else {
+                // Clone new repo to staging
+                let archive_dir = config.archive_dir();
+                std::fs::create_dir_all(&archive_dir)?;
+                match source::clone_repo(remote_repo, &staging_dir, &auth, true) {
+                    Ok(_) => {}
+                    Err(e) => {
+                        println!("  ⚠ Failed to clone {}: {}", remote_repo.name, e);
+                        continue;
+                    }
+                }
+            }
+        }
+
+        // Compress the entire staging directory into one archive
+        let archive_dir = config.archive_dir();
+        std::fs::create_dir_all(&archive_dir)?;
+        let archive_path = archive_dir.join("full-archive.gitka.zst");
+
+        let mut dedup_store = if config.compression.dedup {
+            let mut store = dedup::DedupStore::open(config);
+            store.init().ok();
+            store.load_index().ok();
+            Some(store)
+        } else {
+            None
+        };
+
+        println!("  Compressing all repos...");
+        match compress::compress_directory_with_options(&staging_dir, &archive_path, &config.compression, dedup_store.as_mut()) {
+            Ok(result) => {
+                if let Some(store) = dedup_store.as_ref() {
+                    store.save_index().ok();
+                }
+
+                // Create metadata for each repo pointing to the shared archive
+                for remote_repo in &repos_to_sync {
+                    let meta = repo::RepoMeta {
+                        name: remote_repo.name.clone(),
+                        state: repo::RepoState::Archived,
+                        archive_path: PathBuf::from("full-archive.gitka.zst"),
+                        archive_hash: Some(compress::calculate_hash(&archive_path)?),
+                        archive_size: result.total_size,
+                        volume_count: result.volume_count,
+                        archive_parts: result.part_files.clone(),
+                        decompressed_size: None,
+                        last_synced: None,
+                        last_verified: None,
+                        extraction_path: None,
+                        dedup_enabled: config.compression.dedup,
+                        dedup_bytes_saved: result.dedup_bytes_saved,
+                    };
+                    repo_manager.save_meta(&meta)?;
+                }
+
+                println!("  ✓ Full archive ({:.1} MB, {} repos)",
+                    result.total_size as f64 / 1_048_576.0,
+                    repos_to_sync.len());
+            }
+            Err(e) => {
+                println!("  ⚠ Compression failed: {}", e);
+            }
+        }
+
+        // Clean up staging
+        std::fs::remove_dir_all(&staging_dir).ok();
+    } else {
+        // PerRepo mode (default): compress each repo separately
+        for remote_repo in repos_to_sync {
         // Incremental sync: skip repos not in dirty log (unless --repos was specified)
         if repos.is_none() && !dirty_log.is_dirty(&remote_repo.name) {
             // Check if repo exists and is archived — skip fetch entirely
@@ -935,7 +1041,7 @@ fn cmd_sync(config: &Config, repos: Option<Vec<String>>) -> Result<()> {
                             meta.archive_size = result.total_size;
                             meta.archive_hash = Some(hash);
                             meta.volume_count = result.volume_count;
-                            meta.archive_parts = result.part_files;
+                            meta.archive_parts = result.part_files.clone();
                             meta.dedup_enabled = config.compression.dedup;
                             meta.dedup_bytes_saved = result.dedup_bytes_saved;
                             repo_manager.save_meta(&meta)?;
@@ -962,11 +1068,11 @@ fn cmd_sync(config: &Config, repos: Option<Vec<String>>) -> Result<()> {
                                 volume_info,
                                 dedup_info);
 
-                            // Encrypt if enabled
+                            // Encrypt if enabled (per-volume)
                             if config.toggles.encryption {
                                 if let Some(key) = config.get_encryption_key() {
                                     println!("  Encrypting...");
-                                    match encryption::encrypt_file(&archive_path, &key) {
+                                    match encryption::encrypt_parts(&archive_path, &result.part_files, &key) {
                                         Ok(enc_size) => {
                                             println!("  ✓ Encrypted ({:.1} MB)", enc_size as f64 / 1_048_576.0);
                                         }
@@ -979,15 +1085,16 @@ fn cmd_sync(config: &Config, repos: Option<Vec<String>>) -> Result<()> {
                                 }
                             }
 
-                            // Create recovery records if enabled
+                            // Create recovery records if enabled (per-volume)
                             if config.toggles.recovery_records && recovery::is_par2_available() {
                                 println!("  Creating recovery records...");
                                 let recovery_dir = config.recovery_dir().join(&remote_repo.name);
-                                match recovery::create_recovery(&archive_path, &recovery_dir, 25) {
-                                    Ok(info) => {
-                                        println!("  ✓ Recovery records created ({:.1} MB, {} blocks)",
-                                            info.recovery_size as f64 / 1_048_576.0,
-                                            info.block_count);
+                                match recovery::create_recovery_parts(&archive_path, &result.part_files, &recovery_dir, 25) {
+                                    Ok(infos) => {
+                                        let total_recovery: u64 = infos.iter().map(|i| i.recovery_size).sum();
+                                        println!("  ✓ Recovery records created ({:.1} MB, {} parts)",
+                                            total_recovery as f64 / 1_048_576.0,
+                                            infos.len());
                                     }
                                     Err(e) => {
                                         println!("  ⚠ Recovery record creation failed: {}", e);
@@ -1009,6 +1116,7 @@ fn cmd_sync(config: &Config, repos: Option<Vec<String>>) -> Result<()> {
                 }
             }
         }
+        } // end for remote_repo
     }
 
     // Clear dirty log only after successful sync
@@ -1128,19 +1236,29 @@ fn cmd_unlock(config: &Config, repo_name: &str) -> Result<()> {
     let extraction_path = meta.extraction_target(config);
     std::fs::create_dir_all(&extraction_path)?;
 
-    // Decrypt if encrypted
+    // Decrypt if encrypted (per-volume)
     let archive_path = meta.archive_full_path(config);
     if encryption::is_encrypted(&archive_path)? {
         if let Some(key) = config.get_encryption_key() {
             println!("  Decrypting...");
-            // Copy archive to temp location for decryption
-            let temp_archive = std::env::temp_dir().join(format!("{}.gitka.zst.tmp", repo_name));
-            std::fs::copy(&archive_path, &temp_archive)?;
-            encryption::decrypt_file(&temp_archive, &key)?;
-            // Decompress from temp
-            compress::decompress_directory(&temp_archive, &extraction_path)?;
+            // Copy all volume parts to temp location for decryption
+            let temp_dir = std::env::temp_dir().join(format!("gitka-{}.tmp", repo_name));
+            std::fs::create_dir_all(&temp_dir)?;
+
+            // Copy and decrypt each part
+            for part_name in &meta.archive_parts {
+                let src = config.archive_dir().join(part_name);
+                let dst = temp_dir.join(part_name);
+                std::fs::copy(&src, &dst)?;
+                encryption::decrypt_file(&dst, &key)?;
+            }
+
+            // Decompress from temp (first part)
+            let first_part = temp_dir.join(&meta.archive_parts[0]);
+            compress::decompress_directory(&first_part, &extraction_path)?;
+
             // Clean up temp
-            std::fs::remove_file(&temp_archive)?;
+            std::fs::remove_dir_all(&temp_dir)?;
         } else {
             return Err(GitkaError::Config(
                 "Archive is encrypted but no password configured".to_string(),
@@ -1302,11 +1420,11 @@ fn cmd_lock(config: &Config, repo_name: &str) -> Result<()> {
         compress::verify_archive(&archive_path)?;
     }
 
-    // Encrypt if enabled
+    // Encrypt if enabled (per-volume)
     if config.toggles.encryption {
         if let Some(key) = config.get_encryption_key() {
             println!("  Encrypting...");
-            match encryption::encrypt_file(&archive_path, &key) {
+            match encryption::encrypt_parts(&archive_path, &compress_result.part_files, &key) {
                 Ok(enc_size) => {
                     println!("  ✓ Encrypted ({:.1} MB)", enc_size as f64 / 1_048_576.0);
                 }
@@ -1818,6 +1936,177 @@ fn cmd_config(config: &mut Config, set: Option<String>, get: Option<String>, con
         println!("\nConfig file: {}", config_path.display());
         println!("\nUse `gitka config --set key=value` to edit.");
         println!("Use `gitka config --get key` to query.");
+    }
+
+    Ok(())
+}
+
+/// Import an existing local git repo into the backup target
+fn cmd_import(config: &Config, repo_path: &std::path::Path, name: Option<&str>) -> Result<()> {
+    // Verify it's a git repo
+    if !repo_path.join(".git").exists() {
+        return Err(GitkaError::Config(format!(
+            "Not a git repository: {}",
+            repo_path.display()
+        )));
+    }
+
+    // Determine repo name
+    let repo_name = match name {
+        Some(n) => n.to_string(),
+        None => repo_path.file_name()
+            .ok_or_else(|| GitkaError::Config("Invalid repo path".to_string()))?
+            .to_string_lossy()
+            .to_string(),
+    };
+
+    println!("Importing {}...", repo_name);
+    println!("  Source: {}", repo_path.display());
+
+    // Get repo size
+    let repo_size = source::repo_size(repo_path)?;
+
+    // Compress the repo
+    let archive_dir = config.archive_dir();
+    std::fs::create_dir_all(&archive_dir)?;
+
+    let archive_path = archive_dir.join(format!("{}.gitka.zst", repo_name));
+
+    // Initialize dedup store if enabled
+    let mut dedup_store = if config.compression.dedup {
+        let mut store = dedup::DedupStore::open(config);
+        store.init().ok();
+        store.load_index().ok();
+        Some(store)
+    } else {
+        None
+    };
+
+    println!("  Compressing...");
+    match compress::compress_directory_with_options(repo_path, &archive_path, &config.compression, dedup_store.as_mut()) {
+        Ok(result) => {
+            // Save dedup index
+            if let Some(store) = dedup_store.as_ref() {
+                store.save_index().ok();
+            }
+
+            // Create repo metadata
+            let meta = repo::RepoMeta {
+                name: repo_name.clone(),
+                state: repo::RepoState::Archived,
+                archive_path: PathBuf::from(format!("{}.gitka.zst", repo_name)),
+                archive_hash: Some(compress::calculate_hash(&archive_path)?),
+                archive_size: result.total_size,
+                volume_count: result.volume_count,
+                archive_parts: result.part_files,
+                decompressed_size: Some(repo_size),
+                last_synced: None,
+                last_verified: None,
+                extraction_path: None,
+                dedup_enabled: config.compression.dedup,
+                dedup_bytes_saved: result.dedup_bytes_saved,
+            };
+
+            let repo_manager = repo::RepoManager::new(config.clone());
+            repo_manager.save_meta(&meta)?;
+
+            // Add to config repos
+            let mut config = config.clone();
+            if config.get_repo(&repo_name).is_err() {
+                config.repos.push(config::RepoConfig {
+                    name: repo_name.clone(),
+                    workspace_eligible: true,
+                    full_history: true,
+                    last_synced: None,
+                });
+                let config_path = config.state_dir().join("gitka.toml");
+                config.save(&config_path)?;
+            }
+
+            println!("  ✓ Imported ({:.1} MB archive, {:.1} MB source)",
+                result.total_size as f64 / 1_048_576.0,
+                repo_size as f64 / 1_048_576.0);
+
+            // Encrypt if enabled (per-volume)
+            if config.toggles.encryption {
+                if let Some(key) = config.get_encryption_key() {
+                    println!("  Encrypting...");
+                    match encryption::encrypt_parts(&archive_path, &meta.archive_parts, &key) {
+                        Ok(enc_size) => {
+                            println!("  ✓ Encrypted ({:.1} MB)", enc_size as f64 / 1_048_576.0);
+                        }
+                        Err(e) => {
+                            println!("  ⚠ Encryption failed: {}", e);
+                        }
+                    }
+                }
+            }
+
+            // Create recovery records if enabled (per-volume)
+            if config.toggles.recovery_records && recovery::is_par2_available() {
+                println!("  Creating recovery records...");
+                let recovery_dir = config.recovery_dir().join(&repo_name);
+                match recovery::create_recovery_parts(&archive_path, &meta.archive_parts, &recovery_dir, 25) {
+                    Ok(infos) => {
+                        let total_recovery: u64 = infos.iter().map(|i| i.recovery_size).sum();
+                        println!("  ✓ Recovery records created ({:.1} MB)",
+                            total_recovery as f64 / 1_048_576.0);
+                    }
+                    Err(e) => {
+                        println!("  ⚠ Recovery record creation failed: {}", e);
+                    }
+                }
+            }
+        }
+        Err(e) => {
+            println!("  ⚠ Compression failed: {}", e);
+        }
+    }
+
+    println!("\n✓ Import complete!");
+    println!("  Archive: {}", archive_path.display());
+    println!("  Run `gitka status` to see the imported repo.");
+
+    Ok(())
+}
+
+/// Train a zstd dictionary for better compression of small files
+fn cmd_train_dict(config: &Config, source: Option<&std::path::Path>) -> Result<()> {
+    println!("Training zstd dictionary...");
+
+    let source_dir = match source {
+        Some(s) => s.to_path_buf(),
+        None => {
+            // Use the archive directory as source
+            let archive_dir = config.archive_dir();
+            if !archive_dir.exists() {
+                return Err(GitkaError::Config(
+                    "No archive directory found. Run `gitka sync` first.".to_string(),
+                ));
+            }
+            archive_dir
+        }
+    };
+
+    println!("  Source: {}", source_dir.display());
+    println!("  Dictionary size: {} MB", config.compression.dictionary_size_mb);
+
+    match compress::train_dictionary(&source_dir, config.compression.dictionary_size_mb) {
+        Ok(dict) => {
+            // Save the dictionary
+            let dict_path = config.archive_dir().join(".trained.dict");
+            std::fs::write(&dict_path, &dict)?;
+
+            println!("  ✓ Dictionary trained ({:.1} KB, {} bytes)",
+                dict.len() as f64 / 1024.0,
+                dict.len());
+            println!("  Saved to: {}", dict_path.display());
+            println!("\n  The dictionary will be used automatically for future syncs.");
+        }
+        Err(e) => {
+            println!("  ✗ Training failed: {}", e);
+            println!("\n  Try running `gitka sync` first to have some repos to train from.");
+        }
     }
 
     Ok(())
