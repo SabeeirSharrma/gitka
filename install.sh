@@ -105,27 +105,26 @@ if [ -z "$CLI_ONLY" ] && [ -d "$BUILD_DIR/src-tauri" ]; then
     cargo install tauri-cli --locked 2>&1
   fi
 
-  if (cd "$BUILD_DIR/src-tauri" && cargo tauri build --bundles none) 2>&1; then
-    # Find the built binary (location varies by platform)
-    GUI_BIN=""
-    if [ "$OS" = "Darwin" ]; then
-      GUI_BIN="$BUILD_DIR/src-tauri/target/release/bundle/macos/Gitka.app/Contents/MacOS/gitka-gui"
-    else
-      GUI_BIN="$BUILD_DIR/src-tauri/target/release/gitka-gui"
-    fi
+  # cargo tauri build may fail at bundling (missing linuxdeploy) but the binary is built
+  (cd "$BUILD_DIR/src-tauri" && cargo tauri build) 2>&1 || true
 
-    if [ -f "$GUI_BIN" ]; then
-      if [ -w "$INSTALL_DIR" ]; then
-        install -m 755 "$GUI_BIN" "$INSTALL_DIR/gitka-gui"
-      else
-        sudo install -m 755 "$GUI_BIN" "$INSTALL_DIR/gitka-gui"
-      fi
-      ok "GUI installed to $INSTALL_DIR/gitka-gui"
-    else
-      warn "GUI binary not found at expected location. CLI was installed successfully."
-    fi
+  # Find the built binary (location varies by platform)
+  GUI_BIN=""
+  if [ "$OS" = "Darwin" ]; then
+    GUI_BIN="$BUILD_DIR/src-tauri/target/release/bundle/macos/Gitka.app/Contents/MacOS/gitka-gui"
   else
-    warn "GUI build failed. CLI was installed successfully."
+    GUI_BIN="$BUILD_DIR/src-tauri/target/release/gitka-gui"
+  fi
+
+  if [ -f "$GUI_BIN" ]; then
+    if [ -w "$INSTALL_DIR" ]; then
+      install -m 755 "$GUI_BIN" "$INSTALL_DIR/gitka-gui"
+    else
+      sudo install -m 755 "$GUI_BIN" "$INSTALL_DIR/gitka-gui"
+    fi
+    ok "GUI installed to $INSTALL_DIR/gitka-gui"
+  else
+    warn "GUI binary not found. CLI was installed successfully."
   fi
 elif [ -n "$CLI_ONLY" ]; then
   info "Skipping GUI (--cli-only flag)"

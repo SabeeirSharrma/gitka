@@ -201,7 +201,8 @@ try {
         if ($tauriAvailable) {
             Push-Location "$buildDir\src-tauri"
             try {
-                $guiBuildOutput = & cargo tauri build --bundles none 2>&1 | Out-String
+                # cargo tauri build may fail at bundling but the binary is built
+                $guiBuildOutput = & cargo tauri build 2>&1 | Out-String
                 if ($LASTEXITCODE -eq 0) {
                     # Find the built binary
                     $guiBinaryPath = "$buildDir\src-tauri\target\release\gitka-gui.exe"
