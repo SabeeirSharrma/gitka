@@ -90,10 +90,11 @@ info "Installing CLI to $INSTALL_DIR/gitka..."
 mkdir -p "$INSTALL_DIR" 2>/dev/null || true
 if [ -w "$INSTALL_DIR" ]; then
   cp "$CLI_BIN" "$INSTALL_DIR/gitka"
+  chmod +x "$INSTALL_DIR/gitka"
 else
   sudo cp "$CLI_BIN" "$INSTALL_DIR/gitka"
+  sudo chmod +x "$INSTALL_DIR/gitka"
 fi
-chmod +x "$INSTALL_DIR/gitka"
 ok "CLI installed to $INSTALL_DIR/gitka"
 
 # ── Build GUI (optional) ────────────────────────────────────────────
@@ -118,10 +119,11 @@ if [ -z "$CLI_ONLY" ] && [ -d "$BUILD_DIR/src-tauri" ]; then
     if [ -f "$GUI_BIN" ]; then
       if [ -w "$INSTALL_DIR" ]; then
         cp "$GUI_BIN" "$INSTALL_DIR/gitka-gui"
+        chmod +x "$INSTALL_DIR/gitka-gui"
       else
         sudo cp "$GUI_BIN" "$INSTALL_DIR/gitka-gui"
+        sudo chmod +x "$INSTALL_DIR/gitka-gui"
       fi
-      chmod +x "$INSTALL_DIR/gitka-gui"
       ok "GUI installed to $INSTALL_DIR/gitka-gui"
     else
       warn "GUI binary not found at expected location. CLI was installed successfully."
