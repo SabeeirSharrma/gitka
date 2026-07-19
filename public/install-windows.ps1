@@ -186,17 +186,19 @@ try {
     if (-not $CliOnly -and (Test-Path "$buildDir\src-tauri")) {
         Write-Info "Building GUI..."
 
-        # Install tauri-cli if not present
+        # Ensure tauri-cli is available
+        $tauriAvailable = $true
         $tauriCheck = & cargo tauri --version 2>&1
         if ($LASTEXITCODE -ne 0) {
             Write-Info "Installing tauri-cli..."
             & cargo install tauri-cli --locked 2>&1 | Out-Null
             if ($LASTEXITCODE -ne 0) {
                 Write-Warn "Could not install tauri-cli. GUI not built."
+                $tauriAvailable = $false
             }
         }
 
-        if ($LASTEXITCODE -eq 0) {
+        if ($tauriAvailable) {
             Push-Location "$buildDir\src-tauri"
             try {
                 $guiBuildOutput = & cargo tauri build 2>&1 | Out-String
