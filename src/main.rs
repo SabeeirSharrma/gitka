@@ -2694,8 +2694,19 @@ fn do_update(
         build_dir.join("target/release/gitka")
     };
 
-    std::fs::copy(&cli_binary, install_dir.join(cli_binary.file_name().unwrap()))
-        .map_err(|e| GitkaError::Config(format!("Failed to install CLI binary: {}", e)))?;
+    let cli_dest = install_dir.join(cli_binary.file_name().unwrap());
+    match std::fs::copy(&cli_binary, &cli_dest) {
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+            return Err(GitkaError::Config(format!(
+                "Permission denied writing to {}. Re-run with sudo:\n  sudo gitka update",
+                cli_dest.display()
+            )));
+        }
+        Err(e) => {
+            return Err(GitkaError::Config(format!("Failed to install CLI binary: {}", e)));
+        }
+    }
 
     println!("  ✓ CLI updated");
 
@@ -2763,9 +2774,16 @@ fn build_and_install_gui(build_dir: &Path, install_dir: &Path) -> Result<()> {
 
     if gui_binary.exists() {
         let dest_name = if cfg!(target_os = "windows") { "gitka-gui.exe" } else { "gitka-gui" };
-        std::fs::copy(&gui_binary, install_dir.join(dest_name))
-            .map_err(|e| GitkaError::Config(format!("Failed to install GUI binary: {}", e)))?;
-        println!("  ✓ GUI updated");
+        let gui_dest = install_dir.join(dest_name);
+        match std::fs::copy(&gui_binary, &gui_dest) {
+            Ok(_) => println!("  ✓ GUI updated"),
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+                println!("  ⚠ Permission denied installing GUI to {}. Re-run with sudo.", gui_dest.display());
+            }
+            Err(e) => {
+                println!("  ⚠ Failed to install GUI binary: {}", e);
+            }
+        }
     } else {
         println!("  ⚠ GUI binary not found at expected location");
     }
