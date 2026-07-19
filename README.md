@@ -5,7 +5,7 @@ A Ventoy-inspired tool that creates compressed, physical-media (USB/CD) local co
 ## Install
 
 ```bash
-curl -sSf https://raw.githubusercontent.com/SabeeirSharrma/gitka/refs/heads/main/install.sh | bash
+curl -sSf https://sabeeir.qd.je/gitka/install.sh | bash
 ```
 
 This builds Gitka from source and installs it to `/usr/local/bin`.
