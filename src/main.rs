@@ -2753,7 +2753,7 @@ fn do_update(
 /// Build and install the Tauri GUI binary
 fn build_and_install_gui(build_dir: &Path, install_dir: &Path) -> Result<()> {
     let gui_build = std::process::Command::new("cargo")
-        .args(["tauri", "build", "--release"])
+        .args(["tauri", "build"])
         .current_dir(build_dir.join("src-tauri"))
         .status()
         .map_err(|e| GitkaError::Config(format!("Failed to run tauri build: {}", e)))?;

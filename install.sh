@@ -105,7 +105,7 @@ if [ -z "$CLI_ONLY" ] && [ -d "$BUILD_DIR/src-tauri" ]; then
     cargo install tauri-cli --locked 2>&1
   fi
 
-  if cargo tauri build --release --manifest-path "$BUILD_DIR/src-tauri/Cargo.toml" 2>&1; then
+  if cargo tauri build --manifest-path "$BUILD_DIR/src-tauri/Cargo.toml" 2>&1; then
     # Find the built binary (location varies by platform)
     GUI_BIN=""
     if [ "$OS" = "Darwin" ]; then
