@@ -451,6 +451,28 @@ fn detect_repos_on_drive(path: String) -> Result<Vec<String>, String> {
     Ok(repos)
 }
 
+// ── Update ────────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct UpdateInfo {
+    pub update_available: bool,
+    pub current_version: Option<String>,
+    pub latest_version: Option<String>,
+    pub release_url: Option<String>,
+    pub error: Option<String>,
+}
+
+#[tauri::command]
+fn check_update() -> Result<UpdateInfo, String> {
+    let output = gitka_cmd(&["update", "--check", "--json"])?;
+    serde_json::from_str(&output).map_err(|e| format!("Failed to parse update check JSON: {}", e))
+}
+
+#[tauri::command]
+fn run_update() -> Result<String, String> {
+    gitka_cmd(&["update", "--json"])
+}
+
 // ── Main ──────────────────────────────────────────────────────────
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -477,6 +499,8 @@ pub fn run() {
             detect_usb_drives,
             check_drive,
             detect_repos_on_drive,
+            check_update,
+            run_update,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
