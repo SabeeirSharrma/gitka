@@ -7,6 +7,7 @@ const { invoke } = window.__TAURI__.core;
 let currentView = 'dashboard';
 let repos = [];
 let configPath = null;
+let selectedRepos = new Set();
 
 // ── Init ────────────────────────────────────────────────────────
 
@@ -156,7 +157,10 @@ async function repairRepo(name) {
 
 function initSetupActions() {
   document.getElementById('btn-detect-drives').addEventListener('click', () => detectDrives('setup-drive'));
+  document.getElementById('btn-check-drive').addEventListener('click', checkDrive);
   document.getElementById('btn-setup-init').addEventListener('click', doInitBackup);
+  document.getElementById('btn-sync-selected').addEventListener('click', syncSelectedRepos);
+  document.getElementById('btn-sync-all-existing').addEventListener('click', syncAllExisting);
 
   // Toggle source fields
   document.getElementById('setup-source').addEventListener('change', (e) => {
@@ -174,13 +178,110 @@ async function detectDrives(selectId) {
     select.innerHTML = '<option value="">— Select a drive —</option>';
     for (const d of drives) {
       const opt = document.createElement('option');
-      opt.value = d.path;
+      opt.value = d.mountpoint || d.path;
       opt.textContent = `${d.label || d.path} (${d.size}) — ${d.mountpoint}`;
       select.appendChild(opt);
     }
     setStatus(drives.length ? `Found ${drives.length} drive(s)` : 'No USB drives detected');
   } catch (e) {
     showModal('Drive Detection', `<p>${escapeHtml(String(e))}</p>`);
+  }
+}
+
+async function checkDrive() {
+  const target = document.getElementById('setup-drive').value || document.getElementById('setup-drive-manual').value;
+  if (!target) {
+    showModal('Setup', '<p>Please select or enter a target drive path.</p>');
+    return;
+  }
+
+  setStatus('Checking drive...');
+  try {
+    const status = await invoke('check_drive', { target });
+    const statusSection = document.getElementById('drive-status-section');
+    const statusInfo = document.getElementById('drive-status-info');
+    const existingSection = document.getElementById('existing-repos-section');
+    const newInitSection = document.getElementById('new-init-section');
+
+    statusSection.style.display = '';
+
+    if (status.initialized) {
+      statusInfo.innerHTML = `<p style="color:var(--green);">✓ Drive is initialized with Gitka</p>`;
+
+      if (status.repos.length > 0) {
+        existingSection.style.display = '';
+        newInitSection.style.display = 'none';
+        selectedRepos.clear();
+
+        let html = '';
+        for (const r of status.repos) {
+          html += `
+            <label class="repo-checkbox-row">
+              <input type="checkbox" value="${escapeHtml(r.name)}" class="repo-select-cb" checked>
+              <span class="repo-name">${escapeHtml(r.name)}</span>
+              <span class="repo-meta">${escapeHtml(r.state)} — ${escapeHtml(r.archive_size || 'unknown size')}</span>
+            </label>`;
+        }
+        document.getElementById('existing-repos-list').innerHTML = html;
+
+        // Track selections
+        document.querySelectorAll('.repo-select-cb').forEach(cb => {
+          cb.addEventListener('change', () => {
+            if (cb.checked) selectedRepos.add(cb.value);
+            else selectedRepos.delete(cb.value);
+          });
+          if (cb.checked) selectedRepos.add(cb.value);
+        });
+      } else {
+        existingSection.style.display = 'none';
+        newInitSection.style.display = 'none';
+        statusInfo.innerHTML += `<p>Drive is initialized but has no repos. Use Import to add repos.</p>`;
+      }
+
+      configPath = `${target}/.gitka/gitka.toml`;
+      document.getElementById('status-config').textContent = configPath;
+    } else {
+      statusInfo.innerHTML = `<p style="color:var(--yellow);">⚠ Drive is not initialized</p>
+        <p>Run Initialize to set up Gitka on this drive.</p>`;
+      existingSection.style.display = 'none';
+      newInitSection.style.display = '';
+    }
+
+    setStatus('Drive checked');
+  } catch (e) {
+    showModal('Check Failed', `<p>${escapeHtml(String(e))}</p>`);
+  }
+}
+
+async function syncSelectedRepos() {
+  const repoList = Array.from(selectedRepos);
+  if (repoList.length === 0) {
+    showModal('Sync', '<p>No repos selected.</p>');
+    return;
+  }
+  setStatus(`Syncing ${repoList.length} repo(s)...`);
+  try {
+    const result = await invoke('sync_repos', { configPath, repos: repoList });
+    showModal('Sync Complete', `<pre>${escapeHtml(result.output)}</pre>`);
+    await loadStatus();
+  } catch (e) {
+    showModal('Sync Failed', `<p>${escapeHtml(String(e))}</p>`);
+  }
+}
+
+async function syncAllExisting() {
+  const repoList = Array.from(selectedRepos);
+  if (repoList.length === 0) {
+    showModal('Sync', '<p>No repos found on drive.</p>');
+    return;
+  }
+  setStatus('Syncing all repos...');
+  try {
+    const result = await invoke('sync_repos', { configPath, repos: repoList });
+    showModal('Sync Complete', `<pre>${escapeHtml(result.output)}</pre>`);
+    await loadStatus();
+  } catch (e) {
+    showModal('Sync Failed', `<p>${escapeHtml(String(e))}</p>`);
   }
 }
 
@@ -209,6 +310,8 @@ async function doInitBackup() {
       volumeSize: volumeSize || null,
       dedup,
     });
+    configPath = `${target}/.gitka/gitka.toml`;
+    document.getElementById('status-config').textContent = configPath;
     showModal('Backup Initialized', `<pre>${escapeHtml(output)}</pre>`);
     await loadStatus();
   } catch (e) {
@@ -273,11 +376,11 @@ async function doWipe() {
     return;
   }
 
-  // Confirmation dialog
   const confirmed = await showConfirm(
     '⚠ Confirm Wipe',
     `<p>This will <strong>erase all data</strong> on:</p>
      <p><code>${escapeHtml(target)}</code></p>
+     <p>This will also copy the Gitka CLI and GUI to the drive.</p>
      <p>This action is irreversible. Are you sure?</p>`
   );
   if (!confirmed) return;
@@ -299,6 +402,8 @@ async function doWipe() {
       filesystem,
       yes: true,
     });
+    configPath = `${target}/.gitka/gitka.toml`;
+    document.getElementById('status-config').textContent = configPath;
     showModal('Wipe Complete', `<pre>${escapeHtml(output)}</pre>`);
     await loadStatus();
   } catch (e) {
@@ -435,7 +540,7 @@ function renderRepoGrid() {
   attachCardActions(container);
 }
 
-function repoCardHTML(r, detailed = false) {
+function repoCardHTML(r) {
   const stateClass = r.state === 'Archived' ? 'state-archived'
     : r.state === 'ExtractedLocal' ? 'state-extracted'
     : 'state-served';

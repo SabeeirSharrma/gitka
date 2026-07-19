@@ -454,6 +454,58 @@ fn cmd_wipe(
 
     println!("  ✓ Config created");
 
+    // 9. Copy gitka binaries to USB
+    println!("  Copying gitka binaries...");
+    let tools_dir = target.join("tools");
+    let mut copied = Vec::new();
+
+    // Copy the current gitka binary
+    if let Ok(current_exe) = std::env::current_exe() {
+        let dest = tools_dir.join("gitka");
+        if std::fs::copy(&current_exe, &dest).is_ok() {
+            copied.push("gitka (CLI)");
+            // Make executable
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o755));
+            }
+        }
+    }
+
+    // Try to find and copy gitka-gui binary
+    let gui_names = if cfg!(target_os = "windows") {
+        vec!["gitka-gui.exe"]
+    } else {
+        vec!["gitka-gui"]
+    };
+
+    for gui_name in gui_names {
+        // Check same directory as current exe
+        if let Ok(current_exe) = std::env::current_exe() {
+            if let Some(dir) = current_exe.parent() {
+                let gui_path = dir.join(gui_name);
+                if gui_path.exists() {
+                    let dest = tools_dir.join(gui_name);
+                    if std::fs::copy(&gui_path, &dest).is_ok() {
+                        copied.push("gitka-gui (GUI)");
+                        #[cfg(unix)]
+                        {
+                            use std::os::unix::fs::PermissionsExt;
+                            let _ = std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o755));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if copied.is_empty() {
+        println!("  ⚠ Could not copy gitka binaries (run `cargo install` first)");
+    } else {
+        println!("  ✓ Copied: {}", copied.join(", "));
+    }
+
     println!("\n✅ Wipe and setup complete!");
     println!("  Device: {}", target.display());
     println!("  Config: {}", config_path.display());

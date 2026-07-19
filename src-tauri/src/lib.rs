@@ -363,6 +363,59 @@ fn detect_usb_drives() -> Result<Vec<UsbDrive>, String> {
     Ok(drives)
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DriveStatus {
+    pub initialized: bool,
+    pub repos: Vec<RepoStatus>,
+}
+
+#[tauri::command]
+fn check_drive(target: String) -> Result<DriveStatus, String> {
+    let config_path = format!("{}/.gitka/gitka.toml", target);
+
+    // Check if initialized by trying to get status
+    let args = vec!["--config", &config_path, "status"];
+    match gitka_cmd(&args) {
+        Ok(output) => {
+            let mut repos = Vec::new();
+            for line in output.lines() {
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                if parts.len() >= 4 && !parts[0].starts_with('-') && parts[0] != "Name" && parts[0] != "Repository" {
+                    repos.push(RepoStatus {
+                        name: parts[0].to_string(),
+                        state: parts[1].to_string(),
+                        last_synced: parts.get(2).unwrap_or(&"").to_string(),
+                        archive_size: parts.get(3).unwrap_or(&"").to_string(),
+                        session: parts[4..].join(" "),
+                    });
+                }
+            }
+            Ok(DriveStatus { initialized: true, repos })
+        }
+        Err(_) => Ok(DriveStatus { initialized: false, repos: Vec::new() }),
+    }
+}
+
+#[tauri::command]
+fn detect_repos_on_drive(path: String) -> Result<Vec<String>, String> {
+    use std::fs;
+    let mut repos = Vec::new();
+
+    let entries = fs::read_dir(&path).map_err(|e| format!("Cannot read directory: {}", e))?;
+
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("Read error: {}", e))?;
+        let p = entry.path();
+        if p.is_dir() && p.join(".git").exists() {
+            if let Some(name) = p.file_name() {
+                repos.push(name.to_string_lossy().to_string());
+            }
+        }
+    }
+
+    Ok(repos)
+}
+
 // ── Main ──────────────────────────────────────────────────────────
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -386,6 +439,8 @@ pub fn run() {
             init_backup,
             wipe_drive,
             detect_usb_drives,
+            check_drive,
+            detect_repos_on_drive,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

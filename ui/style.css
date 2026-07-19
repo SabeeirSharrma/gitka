@@ -363,6 +363,40 @@ body {
   color: var(--red);
 }
 
+/* ── Repo checkbox rows ─────────────────────────────────────────── */
+.repo-checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: border-color 0.15s;
+}
+
+.repo-checkbox-row:hover {
+  border-color: var(--accent);
+}
+
+.repo-checkbox-row input[type="checkbox"] {
+  accent-color: var(--accent);
+  width: 16px;
+  height: 16px;
+}
+
+.repo-checkbox-row .repo-name {
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.repo-checkbox-row .repo-meta {
+  font-size: 12px;
+  color: var(--text-dim);
+  margin-left: auto;
+}
+
 /* Toggle switch */
 .toggle {
   position: relative;
