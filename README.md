@@ -46,6 +46,8 @@ gitka serve <repo> --stop                # Stop the server
 gitka verify                             # Check archive integrity
 gitka repair <repo>                      # Fix corrupted repo with recovery records
 gitka config                             # View/edit config
+gitka import <path>                      # Import a local git repo into backup
+gitka train-dict                         # Train zstd dictionary for better compression
 ```
 
 ## How It Works
@@ -53,14 +55,18 @@ gitka config                             # View/edit config
 Gitka keeps all your repos compressed on removable media. When you need to work on one, it extracts temporarily, lets you commit offline, then recompresses when you're done.
 
 - **Aggressive compression** — auto-selects zstd tier based on available space
+- **Zstd dictionary training** — trains a shared dictionary from repo content for better small-file compression
+- **Archive format header** — every archive starts with a 12-byte GITKA header (magic + version + compression method) for future-proofing
 - **Offline commits** — extract a repo, commit locally, sync later
 - **LAN sharing** — serve a repo to others on your network via GitFlare
-- **Recovery records** — optional par2 redundancy for corruption protection
-- **AES-256-GCM encryption** — optional password-based encryption for archives
+- **Recovery records** — optional per-part par2 redundancy for corruption protection
+- **AES-256-GCM encryption** — optional per-volume password-based encryption for archives
 - **Incremental sync** — only checks repos that were modified (dirty log)
 - **Crash resilience** — detects orphaned extractions and recompresses automatically
 - **Volume splitting** — split archives into fixed-size parts for CD/DVD or FAT32 limits
 - **Cross-repo dedup** — share common blobs across repos to save space
+- **FullArchive mode** — compress all repos into a single solid archive stream
+- **Local repo import** — import existing git clones directly into backup
 
 ## Wipe and Install
 
@@ -76,6 +82,19 @@ gitka wipe --target /dev/sdb1 --source github --username myuser
 - Requires typing `YES` to confirm (not just Enter)
 - Auto-selects filesystem: vfat for <4GB, ext4 for larger drives
 - Use `--filesystem` to override (ext4, vfat, ntfs)
+
+## Archive Format
+
+Every archive starts with a 12-byte header that identifies it as a Gitka archive:
+
+| Offset | Size | Field | Description |
+|---|---|---|---|
+| 0 | 5 | Magic | `GITKA` |
+| 5 | 1 | Version | Format version (currently 1) |
+| 6 | 1 | Compression | Method byte (`0x01` = zstd) |
+| 7 | 5 | Reserved | Reserved for future use |
+
+This header is written only to the first volume part. Multi-volume archives use the standard split naming: `repo.gitka.zst` (part 1), `repo.gitka.zst.002` (part 2), etc.
 
 ## Volume Splitting
 
@@ -100,6 +119,39 @@ repos/archive/my-project.gitka.zst.003  # Part 3 (if needed)
 
 All operations (lock, unlock, verify, decompress) automatically detect and handle multi-volume archives. You can copy all parts to your media and Gitka will reassemble them transparently.
 
+**Per-volume encryption:** When encryption is enabled, each volume part is encrypted independently with its own AES-256-GCM nonce. This means each part can be decrypted without loading the entire archive.
+
+**Per-volume recovery:** When recovery records are enabled, par2 redundancy is generated per-part, so individual corrupted parts can be repaired independently.
+
+## Zstd Dictionary Training
+
+Gitka can train a zstd dictionary from your repo content to improve compression of small files. The dictionary captures common patterns across your files (e.g., shared libraries, config templates, vendored dependencies).
+
+```bash
+# Train a dictionary from archived repos
+gitka train-dict
+
+# Train from a specific directory
+gitka train-dict --source /path/to/samples
+```
+
+The trained dictionary is saved to `.trained.dict` alongside the archive and is automatically used for all future compress/decompress operations. Dictionary size is controlled by `compression.dictionary_size_mb` (default: 32 MB).
+
+## FullArchive Mode
+
+By default, each repo gets its own archive (PerRepo mode). FullArchive mode compresses all repos into a single solid archive stream, which can improve compression ratio when repos share common content.
+
+```bash
+gitka config --set compression.solid=full_archive
+```
+
+When syncing in FullArchive mode, all repos are collected into a staging directory and compressed into one `full-archive.gitka.zst` file. Each repo's metadata points to this shared archive.
+
+Available modes:
+- `none` — per-file compression (individual zstd frames)
+- `per_repo` — each repo gets its own archive (default)
+- `full_archive` — all repos in a single archive stream
+
 ## Cross-Repo Deduplication
 
 When multiple repos share common files (e.g., shared libraries, node_modules, vendored dependencies), dedup saves space by storing each unique content block only once.
@@ -116,6 +168,25 @@ gitka config --set compression.dedup=false
 Dedup works by hashing each file's content with SHA-256 before compression. If the same content already exists in the dedup store (from a previously compressed repo), only a reference is written instead of the full content. The dedup store is shared across all repos in the same backup target.
 
 **Space savings example:** If 3 repos each contain the same 50 MB vendored dependency, dedup stores it once instead of three times, saving ~100 MB.
+
+## Import Local Repos
+
+Import an existing local git repository into your Gitka backup without needing to clone from a remote source.
+
+```bash
+# Import by path (uses directory name as repo name)
+gitka import /path/to/my-repo
+
+# Import with a custom name
+gitka import /path/to/my-repo --name my-project
+```
+
+The import command:
+1. Verifies the path is a git repository
+2. Compresses the repo into a `.gitka.zst` archive
+3. Creates metadata entries
+4. Adds the repo to your config
+5. Optionally encrypts and creates recovery records
 
 ## Session Tracking (Dirty Log)
 
@@ -179,7 +250,8 @@ mode = "removable"
 [compression]
 backend = "zstd"
 tier = "auto"                    # auto, low, medium, high
-dictionary_size_mb = 32
+dictionary_size_mb = 32          # zstd dictionary size for better small-file compression
+solid = "per_repo"               # none, per_repo (default), full_archive
 dedup = true                     # cross-repo deduplication
 # volume_splitting = { size_mb = 4096 }  # uncomment to enable splitting
 
@@ -189,8 +261,8 @@ target = "usb"   # or "host" to extract to host computer
 [toggles]
 clear_after_lock = true
 verify_after_sync = true
-encryption = false
-recovery_records = false
+encryption = false               # AES-256-GCM per-volume encryption
+recovery_records = false         # par2 per-volume recovery records
 ```
 
 View or edit config from the command line:
@@ -210,8 +282,14 @@ gitka config --get compression.volume_splitting.size_mb  # check split size
 | USB detection | lsblk + /sys/block | diskutil | PowerShell WMI |
 | Drive formatting | mkfs | diskutil | diskpart |
 | Compression | zstd | zstd | zstd |
+| Archive header | ✅ | ✅ | ✅ |
+| Zstd dictionary | ✅ | ✅ | ✅ |
 | Volume splitting | ✅ | ✅ | ✅ |
+| Per-volume encryption | ✅ | ✅ | ✅ |
+| Per-volume recovery | ✅ | ✅ | ✅ |
 | Cross-repo dedup | ✅ | ✅ | ✅ |
+| FullArchive mode | ✅ | ✅ | ✅ |
+| Local repo import | ✅ | ✅ | ✅ |
 | GitFlare serving | ✅ | ✅ | ✅ |
 
 ## CLI Commands
@@ -231,6 +309,8 @@ gitka config --get compression.volume_splitting.size_mb  # check split size
 | `gitka verify` | Check archive integrity |
 | `gitka repair <repo>` | Fix corrupted repo with recovery records |
 | `gitka config` | View/edit configuration |
+| `gitka import <path>` | Import a local git repo into backup |
+| `gitka train-dict` | Train zstd dictionary for better compression |
 
 ## Made By
 
