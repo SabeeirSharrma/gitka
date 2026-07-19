@@ -1,21 +1,24 @@
 #!/usr/bin/env bash
+# Gitka installer — Linux & macOS
+# Builds CLI and GUI from source, installs to /usr/local/bin (default).
+#
+# Usage:
+#   curl -sSf https://sabeeir.qd.je/gitka/install.sh | bash
+#   curl -sSf https://sabeeir.qd.je/gitka/install.sh | bash -s -- --prefix ~/.local
+
 set -euo pipefail
 
-# Gitka installer — Linux & macOS
-# Builds from source, installs gitka to /usr/local/bin.
-# Usage: curl -sSf https://sabeeir.qd.je/gitka/install.sh | bash
-#        curl -sSf https://sabeeir.qd.je/gitka/install.sh | bash -s -- --prefix ~/.local
-
-REPO="https://github.com/SabeeirSharrma/gitka.git"
+REPO="SabeeirSharrma/gitka"
 INSTALL_DIR="/usr/local/bin"
-BUILD_DIR="${TMPDIR:-/tmp}/gitka-build-$$"
 SKIP_RUST_INSTALL="${SKIP_RUST_INSTALL:-}"
+CLI_ONLY="${CLI_ONLY:-}"
 
-# Parse --prefix
+# Parse flags
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --prefix) INSTALL_DIR="$2"; shift 2 ;;
     --prefix=*) INSTALL_DIR="${1#*=}"; shift ;;
+    --cli-only) CLI_ONLY=1; shift ;;
     *) echo "Unknown option: $1"; exit 1 ;;
   esac
 done
@@ -25,9 +28,6 @@ info()  { printf "\033[1;34m▸\033[0m %s\n" "$*"; }
 ok()    { printf "\033[1;32m✓\033[0m %s\n" "$*"; }
 warn()  { printf "\033[1;33m⚠\033[0m %s\n" "$*"; }
 err()   { printf "\033[1;31m✗\033[0m %s\n" "$*" >&2; exit 1; }
-
-cleanup() { rm -rf "$BUILD_DIR"; }
-trap cleanup EXIT
 
 # ── Detect OS ────────────────────────────────────────────────────────
 OS="$(uname -s)"
@@ -45,6 +45,7 @@ case "$OS" in
       echo ""
       exit 1
     fi
+    # pkg-config may be needed for vendored openssl on some macOS versions
     if ! command -v pkg-config >/dev/null 2>&1 && command -v brew >/dev/null 2>&1; then
       brew install pkg-config 2>/dev/null || true
     fi
@@ -55,53 +56,87 @@ case "$OS" in
     ;;
 esac
 
-# ── Preflight checks ──────────────────────────────────────────────
-
-command -v git >/dev/null 2>&1 || err "git is required but not installed."
-
-if ! command -v cargo >/dev/null 2>&1; then
+# ── Install Rust if missing ──────────────────────────────────────────
+if ! command -v cargo &>/dev/null; then
   if [ -z "$SKIP_RUST_INSTALL" ]; then
-    warn "Rust/Cargo not found. Installing via rustup..."
+    info "Rust not found. Installing via rustup..."
     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-    CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}"
-    export PATH="$CARGO_HOME/bin:$PATH"
+    . "$HOME/.cargo/env"
   else
-    err "Rust/Cargo is required. Install it first: https://rustup.rs"
+    err "Rust/Cargo not found. Install it first: https://rustup.rs"
   fi
 fi
-command -v cargo >/dev/null 2>&1 || err "Cargo still not available after install."
+
+command -v cargo >/dev/null 2>&1 || err "Cargo still not available."
 ok "Dependencies OK"
 
-# ── Clone & build ─────────────────────────────────────────────────
+# ── Clone & build ────────────────────────────────────────────────────
+BUILD_DIR="$HOME/.cache/gitka-install-$$"
+trap 'rm -rf "$BUILD_DIR"' EXIT
 
 info "Cloning Gitka..."
-git clone --depth 1 "$REPO" "$BUILD_DIR"
+git clone --depth 1 "https://github.com/$REPO" "$BUILD_DIR" 2>/dev/null
 
-info "Building release binary (this may take a few minutes)..."
-cd "$BUILD_DIR"
-cargo build --release 2>/dev/null
+# ── Build CLI ────────────────────────────────────────────────────────
+info "Building CLI (this may take a few minutes)..."
+cargo build --release --bin gitka --manifest-path "$BUILD_DIR/Cargo.toml" 2>&1
 
-# ── Install ───────────────────────────────────────────────────────
+CLI_BIN="$BUILD_DIR/target/release/gitka"
+if [ ! -f "$CLI_BIN" ]; then
+  err "CLI build completed but binary not found at $CLI_BIN"
+fi
 
-BINARY="$BUILD_DIR/target/release/gitka"
-[ -f "$BINARY" ] || err "Build succeeded but binary not found at $BINARY"
-
-info "Installing to $INSTALL_DIR/gitka..."
+info "Installing CLI to $INSTALL_DIR/gitka..."
 mkdir -p "$INSTALL_DIR" 2>/dev/null || true
 if [ -w "$INSTALL_DIR" ]; then
-  cp "$BINARY" "$INSTALL_DIR/gitka"
+  cp "$CLI_BIN" "$INSTALL_DIR/gitka"
 else
-  sudo cp "$BINARY" "$INSTALL_DIR/gitka"
+  sudo cp "$CLI_BIN" "$INSTALL_DIR/gitka"
 fi
 chmod +x "$INSTALL_DIR/gitka"
+ok "CLI installed to $INSTALL_DIR/gitka"
 
-ok "Installed to $INSTALL_DIR/gitka"
+# ── Build GUI (optional) ────────────────────────────────────────────
+if [ -z "$CLI_ONLY" ] && [ -d "$BUILD_DIR/src-tauri" ]; then
+  info "Building GUI..."
 
-# ── Verify ────────────────────────────────────────────────────────
+  # Install tauri-cli if not present
+  if ! cargo tauri --version >/dev/null 2>&1; then
+    info "Installing tauri-cli..."
+    cargo install tauri-cli --locked 2>&1
+  fi
 
+  if cargo tauri build --release --manifest-path "$BUILD_DIR/src-tauri/Cargo.toml" 2>&1; then
+    # Find the built binary (location varies by platform)
+    GUI_BIN=""
+    if [ "$OS" = "Darwin" ]; then
+      GUI_BIN="$BUILD_DIR/src-tauri/target/release/bundle/macos/Gitka.app/Contents/MacOS/gitka-gui"
+    else
+      GUI_BIN="$BUILD_DIR/src-tauri/target/release/gitka-gui"
+    fi
+
+    if [ -f "$GUI_BIN" ]; then
+      if [ -w "$INSTALL_DIR" ]; then
+        cp "$GUI_BIN" "$INSTALL_DIR/gitka-gui"
+      else
+        sudo cp "$GUI_BIN" "$INSTALL_DIR/gitka-gui"
+      fi
+      chmod +x "$INSTALL_DIR/gitka-gui"
+      ok "GUI installed to $INSTALL_DIR/gitka-gui"
+    else
+      warn "GUI binary not found at expected location. CLI was installed successfully."
+    fi
+  else
+    warn "GUI build failed. CLI was installed successfully."
+  fi
+elif [ -n "$CLI_ONLY" ]; then
+  info "Skipping GUI (--cli-only flag)"
+fi
+
+# ── Verify ───────────────────────────────────────────────────────────
 if command -v gitka >/dev/null 2>&1; then
   VERSION=$(gitka --version 2>/dev/null || echo "unknown")
-  ok "Gitka $VERSION is ready!"
+  ok "gitka $VERSION is ready!"
 else
   warn "Installed but 'gitka' not found in PATH."
   warn "Make sure $INSTALL_DIR is in your PATH."

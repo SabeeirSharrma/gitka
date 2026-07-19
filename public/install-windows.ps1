@@ -1,5 +1,5 @@
 # Gitka installer for Windows (PowerShell)
-# Builds from source and installs gitka.exe to a location in PATH.
+# Builds CLI and GUI from source and installs both to a location in PATH.
 #
 # Usage (run as Administrator, or ensure your user profile is in PATH):
 #   [Net.ServicePointManager]::SecurityProtocol = 'tls12'
@@ -11,7 +11,8 @@
 param(
     [string]$InstallDir = "$env:LOCALAPPDATA\Programs\Gitka",
     [switch]$SkipRustInstall,
-    [switch]$NoConfirm
+    [switch]$NoConfirm,
+    [switch]$CliOnly
 )
 
 $ErrorActionPreference = "Stop"
@@ -155,10 +156,11 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "git clone failed" }
     Write-Ok "Repository cloned."
 
-    Write-Info "Building release binary (this may take several minutes)..."
+    # ── Build CLI ─────────────────────────────────────────────────
+    Write-Info "Building CLI (this may take several minutes)..."
     Push-Location $buildDir
     try {
-        $buildOutput = & cargo build --release 2>&1 | Out-String
+        $buildOutput = & cargo build --release --bin gitka 2>&1 | Out-String
         if ($LASTEXITCODE -ne 0) {
             Write-Warn "Build output:"
             Write-Host $buildOutput -ForegroundColor DarkYellow
@@ -167,18 +169,56 @@ try {
     } finally {
         Pop-Location
     }
-    Write-Ok "Build completed."
+    Write-Ok "CLI build completed."
 
-    $binaryPath = "$buildDir\target\release\gitka.exe"
-    if (-not (Test-Path $binaryPath)) {
-        throw "Binary not found at $binaryPath"
+    $cliBinaryPath = "$buildDir\target\release\gitka.exe"
+    if (-not (Test-Path $cliBinaryPath)) {
+        throw "CLI binary not found at $cliBinaryPath"
     }
 
-    # ── Install ────────────────────────────────────────────────────
-    Write-Info "Installing to $InstallDir..."
+    # ── Install CLI ───────────────────────────────────────────────
+    Write-Info "Installing CLI to $InstallDir..."
     New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
-    Copy-Item $binaryPath "$InstallDir\gitka.exe" -Force
+    Copy-Item $cliBinaryPath "$InstallDir\gitka.exe" -Force
     Write-Ok "Installed to $InstallDir\gitka.exe"
+
+    # ── Build & install GUI (unless --cli-only) ───────────────────
+    if (-not $CliOnly -and (Test-Path "$buildDir\src-tauri")) {
+        Write-Info "Building GUI..."
+
+        # Install tauri-cli if not present
+        $tauriCheck = & cargo tauri --version 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            Write-Info "Installing tauri-cli..."
+            & cargo install tauri-cli --locked 2>&1 | Out-Null
+            if ($LASTEXITCODE -ne 0) {
+                Write-Warn "Could not install tauri-cli. GUI not built."
+            }
+        }
+
+        if ($LASTEXITCODE -eq 0) {
+            Push-Location "$buildDir\src-tauri"
+            try {
+                $guiBuildOutput = & cargo tauri build --release 2>&1 | Out-String
+                if ($LASTEXITCODE -eq 0) {
+                    # Find the built binary
+                    $guiBinaryPath = "$buildDir\src-tauri\target\release\gitka-gui.exe"
+                    if (Test-Path $guiBinaryPath) {
+                        Copy-Item $guiBinaryPath "$InstallDir\gitka-gui.exe" -Force
+                        Write-Ok "Installed to $InstallDir\gitka-gui.exe"
+                    } else {
+                        Write-Warn "GUI binary not found at expected location."
+                    }
+                } else {
+                    Write-Warn "GUI build failed. CLI was installed successfully."
+                }
+            } finally {
+                Pop-Location
+            }
+        }
+    } elseif ($CliOnly) {
+        Write-Info "Skipping GUI (--cli-only flag)"
+    }
 
     # ── Add to PATH if not already ─────────────────────────────────
     $userPath = [Environment]::GetEnvironmentVariable("PATH", "User")
@@ -211,4 +251,5 @@ Write-Host "  Quick start:" -ForegroundColor Cyan
 Write-Host "    gitka init --target D:\ --username <github-user> --token <pat>" -ForegroundColor Gray
 Write-Host "    gitka scan && gitka sync" -ForegroundColor Gray
 Write-Host "    gitka status" -ForegroundColor Gray
+Write-Host "    gitka update" -ForegroundColor Gray
 Write-Host ""

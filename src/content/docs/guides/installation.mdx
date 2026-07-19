@@ -5,7 +5,7 @@ description: Installation guide for Gitka
 
 # Installation
 
-Gitka builds from source using Rust. We provide install scripts for all platforms — they handle dependencies automatically.
+Gitka builds from source using Rust. We provide install scripts for all platforms — they handle dependencies automatically and install both the CLI (`gitka`) and GUI (`gitka-gui`).
 
 ## Quick Install
 
@@ -68,6 +68,20 @@ curl -sSf https://sabeeir.qd.je/gitka/install.sh | bash -s -- --prefix ~/.local
 | Host-side extraction | ✅ | ✅ | ✅ |
 | Encryption (AES-256-GCM) | ✅ | ✅ | ✅ |
 | Recovery records (par2) | ✅ | ✅ | ✅ |
+
+## CLI-Only Install
+
+To install only the CLI without the GUI:
+
+**Linux/macOS:**
+```bash
+curl -sSf https://sabeeir.qd.je/gitka/install.sh | bash -s -- --cli-only
+```
+
+**Windows:**
+```powershell
+.\install-windows.ps1 -CliOnly
+```
 
 ## Verify Installation
 

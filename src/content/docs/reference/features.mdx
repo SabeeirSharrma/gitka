@@ -121,3 +121,29 @@ gitka sync --json
 gitka status --json
 gitka scan --json
 ```
+
+## Auto-Update
+
+Gitka includes a built-in update system that keeps both CLI and GUI up to date:
+
+```bash
+# Check for updates without installing
+gitka update --check
+
+# Update both CLI and GUI to the latest version
+gitka update
+
+# Update CLI only (skip GUI build)
+gitka update --no-gui
+
+# JSON output for scripting
+gitka update --json
+```
+
+The update command:
+1. Checks GitHub releases for the latest version
+2. Compares with your current version
+3. Clones the latest source and rebuilds both CLI and GUI
+4. Installs the new binaries in-place
+
+The install scripts (`install.sh` and `install-windows.ps1`) also build both CLI and GUI by default. Use `--cli-only` / `-CliOnly` to skip the GUI build during installation.
