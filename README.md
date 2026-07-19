@@ -29,6 +29,21 @@ gitka sync
 gitka status
 ```
 
+## GUI
+
+Gitka ships with a Tauri-based cross-platform GUI (`gitka-gui`) that mirrors every CLI command: dashboard, repositories, setup wizard, import, tools (dictionary training + wipe), and settings.
+
+```bash
+cd src-tauri && cargo tauri dev    # run the GUI in dev mode
+```
+
+The GUI talks to the `gitka` CLI over its machine-readable `--json` outputs (`gitka status --json`, `gitka usb --json`). When you run `gitka wipe`, the CLI and GUI binaries are copied into `<target>/tools/` on the USB so you can run either one straight from the drive — no internet connection required. The GUI is fully offline: the Tauri API is injected by the webview (`withGlobalTauri`) rather than loaded from a CDN.
+
+```bash
+# Build the GUI app bundle
+cd src-tauri && cargo tauri build
+```
+
 ## Usage
 
 ```bash
@@ -38,7 +53,11 @@ gitka init --target <path> --volume-size 4096  # Initialize with FAT32 volume sp
 gitka init --target <path> --dedup       # Initialize with cross-repo dedup
 gitka scan                               # Discover repos, show budget
 gitka sync                               # Clone/fetch repos from source
+gitka sync --repos my-repo,other        # Sync specific repos only
 gitka status                             # Per-repo state + active sessions
+gitka status --json                      # Machine-readable JSON (for GUI/automation)
+gitka usb                               # List detected removable drives
+gitka usb --json                         # Drive list as JSON
 gitka unlock <repo>                      # Extract for offline work
 gitka lock <repo>                        # Recompress + close session
 gitka serve <repo>                       # Serve over LAN via GitFlare
@@ -48,6 +67,7 @@ gitka repair <repo>                      # Fix corrupted repo with recovery reco
 gitka config                             # View/edit config
 gitka import <path>                      # Import a local git repo into backup
 gitka train-dict                         # Train zstd dictionary for better compression
+gitka train-dict --source <dir>         # Train from a specific directory
 ```
 
 ## How It Works
@@ -82,6 +102,8 @@ gitka wipe --target /dev/sdb1 --source github --username myuser
 - Requires typing `YES` to confirm (not just Enter)
 - Auto-selects filesystem: vfat for <4GB, ext4 for larger drives
 - Use `--filesystem` to override (ext4, vfat, ntfs)
+
+**Bundles itself on the drive:** After formatting, `gitka wipe` copies the `gitka` CLI and the `gitka-gui` binary (if present alongside the CLI at runtime) into `<target>/tools/`. The binaries are made executable on Unix, so you can run Gitka directly from the USB on any machine — no installed copy required.
 
 ## Archive Format
 
@@ -119,7 +141,7 @@ repos/archive/my-project.gitka.zst.003  # Part 3 (if needed)
 
 All operations (lock, unlock, verify, decompress) automatically detect and handle multi-volume archives. You can copy all parts to your media and Gitka will reassemble them transparently.
 
-**Per-volume encryption:** When encryption is enabled, each volume part is encrypted independently with its own AES-256-GCM nonce. This means each part can be decrypted without loading the entire archive.
+**Per-volume encryption:** When encryption is enabled, each volume part is encrypted independently with its own AES-256-GCM nonce. This means each part can be decrypted without loading the entire archive. The encryption salt is generated and **persisted to config** when encryption is turned on (during `init`, `wipe`, or `config --set togglers.encryption`), so encrypted archives remain recoverable across sessions and machines. Key derivation uses an iterated SHA-256 chain over (password, salt, round index) for 10,000 rounds.
 
 **Per-volume recovery:** When recovery records are enabled, par2 redundancy is generated per-part, so individual corrupted parts can be repaired independently.
 
@@ -192,7 +214,7 @@ The import command:
 
 Gitka tracks which repos were extracted and what changed during each session. This powers two features:
 
-**Incremental sync** — `gitka sync` skips repos that haven't been touched since last sync, making it much faster with many repos.
+**Incremental sync** — `gitka sync` skips repos that haven't been touched since last sync, making it much faster with many repos. When `sync` finishes, it clears dirty-log entries only for the repos it actually synced (so partial syncs via `--repos` don't lose state for the repos that were skipped).
 
 **Crash recovery** — if a session wasn't closed cleanly (USB yanked, crash, power loss), `gitka sync` detects the orphaned extraction and recompresses it automatically.
 
@@ -279,7 +301,7 @@ gitka config --get compression.volume_splitting.size_mb  # check split size
 
 | Feature | Linux | macOS | Windows |
 |---|---|---|---|
-| USB detection | lsblk + /sys/block | diskutil | PowerShell WMI |
+| USB detection | lsblk + /sys/block | diskutil (plist) | PowerShell WMI |
 | Drive formatting | mkfs | diskutil | diskpart |
 | Compression | zstd | zstd | zstd |
 | Archive header | ✅ | ✅ | ✅ |
@@ -291,18 +313,24 @@ gitka config --get compression.volume_splitting.size_mb  # check split size
 | FullArchive mode | ✅ | ✅ | ✅ |
 | Local repo import | ✅ | ✅ | ✅ |
 | GitFlare serving | ✅ | ✅ | ✅ |
+| Private repo sync | ✅ | ✅ | ✅ |
+| GUI (gitka-gui) | ✅ | ✅ | ✅ |
 
 ## CLI Commands
 
 | Command | Description |
 |---|---|
-| `gitka wipe` | Wipe removable drive + set up (SAFETY: removable only, requires YES) |
+| `gitka wipe` | Wipe removable drive + set up (SAFETY: removable only, requires YES); copies CLI + GUI to USB |
 | `gitka init` | Initialize a new Gitka backup on existing storage |
 | `gitka init --volume-size <MB>` | Initialize with volume splitting |
 | `gitka init --dedup` | Initialize with cross-repo deduplication |
 | `gitka scan` | Discover repos from source, show budget |
 | `gitka sync` | Clone/fetch repos (incremental — skips untouched repos) |
+| `gitka sync --repos a,b` | Sync only the named repos |
 | `gitka status` | Per-repo state, archive sizes, active sessions |
+| `gitka status --json` | Same output as JSON (used by the GUI) |
+| `gitka usb` | List detected removable drives |
+| `gitka usb --json` | Drive list as JSON (used by the GUI) |
 | `gitka unlock <repo>` | Extract for offline commit access |
 | `gitka lock <repo>` | Recompress + close session (shows audit trail) |
 | `gitka serve <repo>` | Serve over LAN via GitFlare |
@@ -311,6 +339,30 @@ gitka config --get compression.volume_splitting.size_mb  # check split size
 | `gitka config` | View/edit configuration |
 | `gitka import <path>` | Import a local git repo into backup |
 | `gitka train-dict` | Train zstd dictionary for better compression |
+| `gitka train-dict --source <dir>` | Train from a specific sample directory |
+| `gitka gui` | Launch the GUI (prints instructions) |
+
+## Machine-Readable Output
+
+`gitka status --json` and `gitka usb --json` emit stable JSON shapes for the GUI and any automation that wraps Gitka. Both return an array of objects.
+
+```jsonc
+// gitka status --json
+[
+  {
+    "name": "my-repo",
+    "state": "Archived",        // "Archived" | "ExtractedLocal" | "ExtractedServed"
+    "last_synced": "2h ago",
+    "archive_size": "45.2 MB",
+    "session": ""               // non-empty when the repo is unlocked/serving
+  }
+]
+
+// gitka usb --json
+[
+  { "path": "/run/media/usb", "label": "GITKA", "size": "64003471360B", "mountpoint": "/run/media/usb" }
+]
+```
 
 ## Made By
 
