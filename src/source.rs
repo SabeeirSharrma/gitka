@@ -38,6 +38,62 @@ struct GitHubRepo {
     description: Option<String>,
     private: bool,
     size: u64,
+    owner: GitHubOwner,
+}
+
+#[derive(Debug, Deserialize)]
+struct GitHubOwner {
+    login: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct GitHubIdentity {
+    pub login: String,
+    pub name: Option<String>,
+}
+
+fn github_identity_client(token: &str) -> Result<reqwest::blocking::Client> {
+    let mut headers = reqwest::header::HeaderMap::new();
+    headers.insert("Accept", "application/vnd.github+json".parse().unwrap());
+    headers.insert("User-Agent", "gitka/0.1.0".parse().unwrap());
+    headers.insert(
+        "Authorization",
+        format!("Bearer {}", token).parse().unwrap(),
+    );
+
+    reqwest::blocking::Client::builder()
+        .default_headers(headers)
+        .build()
+        .map_err(|e| GitkaError::Config(format!("Failed to create HTTP client: {}", e)))
+}
+
+/// Verify a GitHub token and return the authenticated identity.
+pub fn verify_github_token(token: &str) -> Result<GitHubIdentity> {
+    let client = github_identity_client(token)?;
+    let response = client
+        .get("https://api.github.com/user")
+        .send()
+        .map_err(|e| GitkaError::Config(format!("GitHub auth request failed: {}", e)))?;
+
+    if response.status().as_u16() == 401 || response.status().as_u16() == 403 {
+        return Err(GitkaError::Config(
+            "GitHub authentication failed. Check the personal access token.".to_string(),
+        ));
+    }
+
+    if !response.status().is_success() {
+        return Err(GitkaError::Config(format!(
+            "GitHub auth error: {} - {}",
+            response.status(),
+            response.text().unwrap_or_else(|_| "Unknown error".to_string())
+        )));
+    }
+
+    let user: GitHubIdentity = response
+        .json()
+        .map_err(|e| GitkaError::Config(format!("Failed to parse GitHub identity: {}", e)))?;
+
+    Ok(user)
 }
 
 /// Source provider trait
@@ -99,32 +155,65 @@ impl GitHubSource {
 impl SourceProvider for GitHubSource {
     fn list_repos(&self) -> Result<Vec<RemoteRepo>> {
         let client = self.client()?;
-        let url = format!("https://api.github.com/users/{}/repos", self.username);
+        let mut repos: Vec<GitHubRepo> = Vec::new();
+        let mut page = 1u32;
 
-        let response = client
-            .get(&url)
-            .query(&[("per_page", "100"), ("sort", "updated")])
-            .send()
-            .map_err(|e| GitkaError::Config(format!("GitHub API request failed: {}", e)))?;
+        loop {
+            let (url, query): (String, Vec<(&str, String)>) = if self.token.is_some() {
+                (
+                    "https://api.github.com/user/repos".to_string(),
+                    vec![
+                        ("per_page", "100".to_string()),
+                        ("page", page.to_string()),
+                        ("sort", "updated".to_string()),
+                        ("visibility", "all".to_string()),
+                        ("affiliation", "owner,collaborator,organization_member".to_string()),
+                    ],
+                )
+            } else {
+                (
+                    format!("https://api.github.com/users/{}/repos", self.username),
+                    vec![
+                        ("per_page", "100".to_string()),
+                        ("page", page.to_string()),
+                        ("sort", "updated".to_string()),
+                    ],
+                )
+            };
 
-        if response.status().as_u16() == 404 {
-            return Err(GitkaError::Config(format!(
-                "GitHub user or organization '{}' not found. Please check the username.",
-                self.username
-            )));
+            let response = client
+                .get(&url)
+                .query(&query)
+                .send()
+                .map_err(|e| GitkaError::Config(format!("GitHub API request failed: {}", e)))?;
+
+            if response.status().as_u16() == 404 {
+                return Err(GitkaError::Config(format!(
+                    "GitHub user or organization '{}' not found. Please check the username.",
+                    self.username
+                )));
+            }
+
+            if !response.status().is_success() {
+                return Err(GitkaError::Config(format!(
+                    "GitHub API error: {} - {}",
+                    response.status(),
+                    response.text().unwrap_or_else(|_| "Unknown error".to_string())
+                )));
+            }
+
+            let page_repos: Vec<GitHubRepo> = response
+                .json()
+                .map_err(|e| GitkaError::Config(format!("Failed to parse GitHub response: {}", e)))?;
+
+            let page_count = page_repos.len();
+            repos.extend(page_repos.into_iter());
+
+            if page_count < 100 {
+                break;
+            }
+            page += 1;
         }
-
-        if !response.status().is_success() {
-            return Err(GitkaError::Config(format!(
-                "GitHub API error: {} - {}",
-                response.status(),
-                response.text().unwrap_or_else(|_| "Unknown error".to_string())
-            )));
-        }
-
-        let repos: Vec<GitHubRepo> = response
-            .json()
-            .map_err(|e| GitkaError::Config(format!("Failed to parse GitHub response: {}", e)))?;
 
         Ok(repos
             .into_iter()
@@ -258,16 +347,22 @@ struct GitFlareRepo {
 
 /// Create a source provider from config
 pub fn create_source(config: &SourceConfig) -> Result<Box<dyn SourceProvider>> {
-    if let Some(username) = &config.github_username {
-        return Ok(Box::new(GitHubSource::new(
-            username.clone(),
+    if let Some(url) = &config.gitflare_url {
+        return Ok(Box::new(GitFlareSource::new(
+            url.clone(),
             config.auth_token.clone(),
         )));
     }
 
-    if let Some(url) = &config.gitflare_url {
-        return Ok(Box::new(GitFlareSource::new(
-            url.clone(),
+    if config.github_username.is_some() || config.auth_token.is_some() {
+        if config.auth_token.is_none() {
+            return Err(GitkaError::Config(
+                "GitHub authentication is required. Run `gitka auth github` first.".to_string(),
+            ));
+        }
+
+        return Ok(Box::new(GitHubSource::new(
+            config.github_username.clone().unwrap_or_default(),
             config.auth_token.clone(),
         )));
     }
@@ -316,17 +411,19 @@ pub fn fetch_repo(repo_path: &Path, auth: &AuthMethod) -> Result<()> {
 
     let mut remote = repo.find_remote("origin").map_err(|e| GitkaError::Git(e))?;
 
-    // Update remote URL with authentication if needed
+    let mut fetch_opts = git2::FetchOptions::new();
     if let AuthMethod::Token(token) = auth {
-        let url = remote.url().unwrap_or("").to_string();
-        let _authenticated_url = url
-            .replace("https://", &format!("https://x-access-token:{}@", token));
-        // Note: git2 Remote doesn't have set_url, so we'll use the URL with token directly
-        // This is a limitation - we may need to use git2's credential callback instead
+        let token = token.clone();
+        let mut callbacks = git2::RemoteCallbacks::new();
+        callbacks.credentials(move |_url, username_from_url, _allowed_types| {
+            let username = username_from_url.unwrap_or("x-access-token");
+            git2::Cred::userpass_plaintext(username, &token)
+        });
+        fetch_opts.remote_callbacks(callbacks);
     }
 
     remote
-        .fetch(&[] as &[&str], None, None)
+        .fetch(&[] as &[&str], Some(&mut fetch_opts), None)
         .map_err(|e| GitkaError::Git(e))?;
 
     Ok(())

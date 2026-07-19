@@ -102,8 +102,12 @@ impl DedupStore {
 
     /// Register new content in the index
     pub fn register(&mut self, hash: String, ref_info: DedupRef) {
-        self.index.bytes_saved += ref_info.length;
         self.index.entries.insert(hash, ref_info);
+    }
+
+    /// Record bytes saved by a deduplicated duplicate entry.
+    pub fn record_saved_bytes(&mut self, bytes: u64) {
+        self.index.bytes_saved += bytes;
     }
 
     /// Check if content already exists
@@ -169,6 +173,9 @@ mod tests {
         store.register(hash.clone(), ref_info);
         assert!(store.contains(&hash));
         assert_eq!(store.entry_count(), 1);
+        assert_eq!(store.bytes_saved(), 0);
+
+        store.record_saved_bytes(12);
         assert_eq!(store.bytes_saved(), 12);
 
         store.save_index().unwrap();

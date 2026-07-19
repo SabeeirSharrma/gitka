@@ -1,6 +1,10 @@
 // ── Gitka GUI — Main Application ────────────────────────────────
 
-const { invoke } = window.__TAURI__.core;
+const invoke = window.__TAURI__?.core?.invoke || window.__TAURI__?.invoke;
+
+if (!invoke) {
+  throw new Error('Tauri API unavailable. Enable app.withGlobalTauri in tauri.conf.json.');
+}
 
 // ── State ───────────────────────────────────────────────────────
 
@@ -8,6 +12,15 @@ let currentView = 'dashboard';
 let repos = [];
 let configPath = null;
 let selectedRepos = new Set();
+let githubAuth = {
+  authenticated: false,
+  verified: false,
+  login: null,
+  username: null,
+  configSaved: false,
+  configPath: null,
+  loadedToken: null,
+};
 
 // ── Init ────────────────────────────────────────────────────────
 
@@ -158,6 +171,7 @@ async function repairRepo(name) {
 function initSetupActions() {
   document.getElementById('btn-detect-drives').addEventListener('click', () => detectDrives('setup-drive'));
   document.getElementById('btn-check-drive').addEventListener('click', checkDrive);
+  document.getElementById('btn-auth-github-setup').addEventListener('click', verifySetupGithubAuth);
   document.getElementById('btn-setup-init').addEventListener('click', doInitBackup);
   document.getElementById('btn-sync-selected').addEventListener('click', syncSelectedRepos);
   document.getElementById('btn-sync-all-existing').addEventListener('click', syncAllExisting);
@@ -319,6 +333,38 @@ async function doInitBackup() {
   }
 }
 
+async function verifySetupGithubAuth() {
+  const username = document.getElementById('setup-username').value || null;
+  const token = document.getElementById('setup-token').value || null;
+  if (!token) {
+    showModal('GitHub Auth', '<p>Please enter a GitHub personal access token first.</p>');
+    return;
+  }
+
+  setStatus('Verifying GitHub authentication...');
+  try {
+    const result = await invoke('auth_github', {
+      configPath: null,
+      username,
+      token,
+      verify: true,
+      status: false,
+    });
+
+    githubAuth = result;
+    githubAuth.loadedToken = token;
+    if (!document.getElementById('setup-username').value && (result.username || result.login)) {
+      document.getElementById('setup-username').value = result.username || result.login;
+    }
+
+    showModal('GitHub Auth', `<pre>${escapeHtml(result.message)}</pre>`);
+    setStatus('GitHub authentication verified');
+  } catch (e) {
+    showModal('GitHub Auth Failed', `<p>${escapeHtml(String(e))}</p>`);
+    setStatus('Ready');
+  }
+}
+
 // ── Import ──────────────────────────────────────────────────────
 
 function initImportActions() {
@@ -415,6 +461,7 @@ async function doWipe() {
 
 function initSettingsActions() {
   document.getElementById('btn-save-settings').addEventListener('click', saveSettings);
+  document.getElementById('btn-auth-github-settings').addEventListener('click', authenticateSavedGithub);
 }
 
 async function loadConfig() {
@@ -436,6 +483,14 @@ function parseConfig(toml) {
 
   const v = get('github_username'); if (v) document.getElementById('cfg-github-username').value = v;
   const t = get('auth_token'); if (t) document.getElementById('cfg-auth-token').value = t;
+  githubAuth = {
+    ...githubAuth,
+    authenticated: Boolean(t),
+    verified: false,
+    username: v || null,
+    loadedToken: t || null,
+    configPath,
+  };
   const tier = get('tier'); if (tier) document.getElementById('cfg-tier').value = tier;
   const dict = get('dictionary_size_mb'); if (dict) document.getElementById('cfg-dict-size').value = dict;
   const solid = get('solid'); if (solid) document.getElementById('cfg-solid').value = solid;
@@ -449,9 +504,9 @@ function parseConfig(toml) {
 }
 
 async function saveSettings() {
+  const githubUsername = document.getElementById('cfg-github-username').value;
+  const githubToken = document.getElementById('cfg-auth-token').value;
   const sets = [
-    ['source.github_username', document.getElementById('cfg-github-username').value],
-    ['source.auth_token', document.getElementById('cfg-auth-token').value],
     ['compression.tier', document.getElementById('cfg-tier').value],
     ['compression.dictionary_size_mb', document.getElementById('cfg-dict-size').value],
     ['compression.solid', document.getElementById('cfg-solid').value],
@@ -468,6 +523,35 @@ async function saveSettings() {
 
   setStatus('Saving settings...');
   let errors = 0;
+
+  if (githubToken && githubToken !== githubAuth.loadedToken) {
+    try {
+      const result = await invoke('auth_github', {
+        configPath,
+        username: githubUsername || null,
+        token: githubToken,
+        verify: true,
+        status: false,
+      });
+      githubAuth = result;
+      githubAuth.loadedToken = githubToken;
+      if (result.username) {
+        document.getElementById('cfg-github-username').value = result.username;
+      }
+      showModal('GitHub Auth', `<pre>${escapeHtml(result.message)}</pre>`);
+    } catch (e) {
+      showModal('GitHub Auth Failed', `<p>${escapeHtml(String(e))}</p>`);
+      setStatus('Settings not saved');
+      return;
+    }
+  } else if (githubUsername) {
+    try {
+      await invoke('set_config', { configPath, key: 'source.github_username', value: String(githubUsername) });
+    } catch (e) {
+      errors++;
+    }
+  }
+
   for (const [key, value] of sets) {
     try {
       await invoke('set_config', { configPath, key, value: String(value) });
@@ -476,6 +560,38 @@ async function saveSettings() {
     }
   }
   setStatus(errors === 0 ? 'Settings saved' : `Saved with ${errors} error(s)`);
+}
+
+async function authenticateSavedGithub() {
+  const username = document.getElementById('cfg-github-username').value || null;
+  const token = document.getElementById('cfg-auth-token').value || null;
+  if (!token) {
+    showModal('GitHub Auth', '<p>Please enter a GitHub personal access token first.</p>');
+    return;
+  }
+
+  setStatus('Authenticating GitHub...');
+  try {
+    const result = await invoke('auth_github', {
+      configPath,
+      username,
+      token,
+      verify: true,
+      status: false,
+    });
+
+    githubAuth = result;
+    githubAuth.loadedToken = token;
+    if (result.username) {
+      document.getElementById('cfg-github-username').value = result.username;
+    }
+    showModal('GitHub Auth', `<pre>${escapeHtml(result.message)}</pre>`);
+    await loadConfig();
+    setStatus('GitHub authenticated');
+  } catch (e) {
+    showModal('GitHub Auth Failed', `<p>${escapeHtml(String(e))}</p>`);
+    setStatus('Ready');
+  }
 }
 
 // ── Status ──────────────────────────────────────────────────────

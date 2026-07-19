@@ -5,7 +5,6 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Gitka</title>
   <link rel="stylesheet" href="style.css">
-  <script src="https://unpkg.com/@tauri-apps/api@2/dist/tauri.js"></script>
   <script src="app.js"></script>
 </head>
 <body>
@@ -164,6 +163,9 @@
               <label>Auth Token (optional)</label>
               <input type="password" id="setup-token" placeholder="ghp_xxx">
             </div>
+            <div class="setting-actions">
+              <button class="btn btn-secondary" id="btn-auth-github-setup">Verify GitHub Login</button>
+            </div>
           </div>
 
           <div class="setting-group">
@@ -293,6 +295,9 @@
           <div class="setting-row">
             <label>Auth Token</label>
             <input type="password" id="cfg-auth-token" placeholder="ghp_xxx (optional)">
+          </div>
+          <div class="setting-actions">
+            <button class="btn btn-secondary" id="btn-auth-github-settings">Authenticate GitHub</button>
           </div>
         </div>
         <div class="setting-group">

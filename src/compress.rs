@@ -1,11 +1,13 @@
 #![allow(dead_code)]
 
 use std::path::Path;
+use std::io::{Read, Seek, SeekFrom};
 
 use crate::archive::{ArchiveHeader, COMPRESSION_ZSTD};
 use crate::config::{CompressionConfig, CompressionTier};
 use crate::dedup::{DedupRef, DedupStore, DEDUP_MARKER, RAW_MARKER};
 use crate::error::{GitkaError, Result};
+use zstd::stream::read::Decoder;
 
 /// Size of the archive header in bytes
 const HEADER_SIZE: usize = 12;
@@ -30,6 +32,9 @@ impl BudgetCheck {
     pub fn determine_tier(&self, config: &CompressionConfig) -> CompressionTier {
         match &config.tier {
             CompressionTier::Auto => {
+                if self.needed_space == 0 {
+                    return CompressionTier::Low;
+                }
                 let ratio = self.free_space as f64 / self.needed_space as f64;
                 if ratio >= 3.0 {
                     CompressionTier::Low
@@ -45,7 +50,11 @@ impl BudgetCheck {
 
     /// Check if the budget is exceeded even at max compression
     pub fn is_over_budget(&self) -> bool {
-        self.free_space < self.needed_space / 4
+        if self.needed_space == 0 {
+            return false;
+        }
+
+        self.free_space < self.needed_space
     }
 
     /// Get the estimated compression ratio for a tier
@@ -257,6 +266,10 @@ pub fn compress_directory_with_options(
                         .map_err(|e| GitkaError::Compression(format!("Write error: {}", e)))?;
                     // No actual content follows — hash is the reference
 
+                    if let Some(store) = dedup_store.as_mut() {
+                        store.record_saved_bytes(buffer.len() as u64);
+                    }
+
                     pb.inc(1);
                     continue;
                 }
@@ -360,9 +373,6 @@ pub fn decompress_directory(
     target_dir: &Path,
 ) -> Result<u64> {
     use indicatif::{ProgressBar, ProgressStyle};
-    use std::fs::File;
-    use std::io::Read;
-    use zstd::stream::read::Decoder;
 
     // Detect multi-volume: check if .002, .003 etc. exist
     let parts = find_archive_parts(archive_path)?;
@@ -386,23 +396,10 @@ pub fn decompress_directory(
 
     let mut total_bytes = 0u64;
 
-    // Open first part and skip archive header if present
     let first_part_path = archive_path.parent()
         .unwrap_or(Path::new("."))
         .join(&parts[0]);
-    let mut file = File::open(&first_part_path)
-        .map_err(|e| GitkaError::Extraction(format!("Failed to open archive: {}", e)))?;
-
-    // Check for and skip the 12-byte archive header
-    let mut header_buf = [0u8; HEADER_SIZE];
-    let has_header = file.read_exact(&mut header_buf).is_ok()
-        && header_buf[0..5] == *crate::archive::ARCHIVE_MAGIC;
-    if has_header {
-        // Validate header
-        let header = ArchiveHeader::from_bytes(&header_buf)?;
-        header.validate()?;
-    }
-
+    let file = open_archive_file(&first_part_path)?;
     let mut decoder = Decoder::new(file)
         .map_err(|e| GitkaError::Extraction(format!("Failed to create decoder: {}", e)))?;
 
@@ -423,11 +420,8 @@ pub fn decompress_directory(
                     let next_part_path = archive_path.parent()
                         .unwrap_or(Path::new("."))
                         .join(next_part_name);
-                    let next_file = File::open(&next_part_path)
-                        .map_err(|e| GitkaError::Extraction(format!("Failed to open part {}: {}", next_part_name, e)))?;
-                    // Finish old decoder (flush)
-                    drop(decoder);
-                    decoder = Decoder::new(next_file)
+                    let file = open_archive_file(&next_part_path)?;
+                    decoder = Decoder::new(file)
                         .map_err(|e| GitkaError::Extraction(format!("Failed to create decoder for part {}: {}", next_part_name, e)))?;
                     pb.inc(0); // update progress
                     continue;
@@ -521,9 +515,6 @@ pub fn decompress_directory_with_dedup(
     dedup_store: &DedupStore,
 ) -> Result<u64> {
     use indicatif::{ProgressBar, ProgressStyle};
-    use std::fs::File;
-    use std::io::Read;
-    use zstd::stream::read::Decoder;
 
     let parts = find_archive_parts(archive_path)?;
 
@@ -548,18 +539,7 @@ pub fn decompress_directory_with_dedup(
     let first_part_path = archive_path.parent()
         .unwrap_or(Path::new("."))
         .join(&parts[0]);
-    let mut file = File::open(&first_part_path)
-        .map_err(|e| GitkaError::Extraction(format!("Failed to open archive: {}", e)))?;
-
-    // Check for and skip the 12-byte archive header
-    let mut header_buf = [0u8; HEADER_SIZE];
-    let has_header = file.read_exact(&mut header_buf).is_ok()
-        && header_buf[0..5] == *crate::archive::ARCHIVE_MAGIC;
-    if has_header {
-        let header = ArchiveHeader::from_bytes(&header_buf)?;
-        header.validate()?;
-    }
-
+    let file = open_archive_file(&first_part_path)?;
     let mut decoder = Decoder::new(file)
         .map_err(|e| GitkaError::Extraction(format!("Failed to create decoder: {}", e)))?;
 
@@ -574,10 +554,8 @@ pub fn decompress_directory_with_dedup(
                     let next_part_path = archive_path.parent()
                         .unwrap_or(Path::new("."))
                         .join(next_part_name);
-                    let next_file = File::open(&next_part_path)
-                        .map_err(|e| GitkaError::Extraction(format!("Failed to open part {}: {}", next_part_name, e)))?;
-                    drop(decoder);
-                    decoder = Decoder::new(next_file)
+                    let file = open_archive_file(&next_part_path)?;
+                    decoder = Decoder::new(file)
                         .map_err(|e| GitkaError::Extraction(format!("Failed to create decoder for part {}: {}", next_part_name, e)))?;
                     pb.inc(0);
                     continue;
@@ -635,9 +613,7 @@ pub fn decompress_directory_with_dedup(
                 };
 
                 // Read the raw content from the source archive
-                let source_content = read_raw_content_from_archive(
-                    &source_path, dedup_ref.offset, dedup_ref.length
-                )?;
+                let source_content = read_raw_content_from_archive(&source_path, dedup_ref.offset, dedup_ref.length)?;
 
                 let target_path = target_dir.join(&relative_path);
                 if let Some(parent) = target_path.parent() {
@@ -686,25 +662,107 @@ pub fn decompress_directory_with_dedup(
 
 /// Read raw content from a compressed archive at a given offset (for dedup resolution)
 fn read_raw_content_from_archive(
-    _archive_path: &Path,
-    _offset: u64,
-    _length: u64,
+    archive_path: &Path,
+    offset: u64,
+    length: u64,
 ) -> Result<Vec<u8>> {
-    // Since we store dedup refs at registration time, the content is in the
-    // first archive that was compressed. We need to re-read it from there.
-    // For simplicity, we store the content hash but not the physical offset
-    // in the compressed stream (which changes with compression).
-    //
-    // Instead, we use a different approach: the dedup store stores the
-    // actual content bytes for small files, or a reference to a blob file.
-    //
-    // For now, return an error — the caller should use the non-dedup path
-    // when the dedup store can't resolve. In practice, dedup resolution
-    // happens at compress time (skip writing duplicate content), not at
-    // decompress time.
-    Err(GitkaError::Extraction(
-        "Dedup resolution requires content store. Use decompress_directory for standard archives.".to_string()
-    ))
+    let file = open_archive_file(archive_path)?;
+    let mut decoder = Decoder::new(file)
+        .map_err(|e| GitkaError::Extraction(format!("Failed to create decoder: {}", e)))?;
+    let mut consumed = 0u64;
+
+    loop {
+        let frame_start = consumed;
+        let mut len_buf = [0u8; 4];
+        match decoder.read_exact(&mut len_buf) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
+            Err(e) => return Err(GitkaError::Extraction(format!("Read error: {}", e))),
+        }
+        let path_len = u32::from_le_bytes(len_buf) as u64;
+        consumed += 4;
+
+        let mut path_buf = vec![0u8; path_len as usize];
+        decoder.read_exact(&mut path_buf)
+            .map_err(|e| GitkaError::Extraction(format!("Read error: {}", e)))?;
+        consumed += path_len;
+
+        let mut marker_buf = [0u8; 1];
+        decoder.read_exact(&mut marker_buf)
+            .map_err(|e| GitkaError::Extraction(format!("Read error: {}", e)))?;
+        consumed += 1;
+
+        if marker_buf[0] == DEDUP_MARKER {
+            let mut hash_len_buf = [0u8; 4];
+            decoder.read_exact(&mut hash_len_buf)
+                .map_err(|e| GitkaError::Extraction(format!("Read error: {}", e)))?;
+            let hash_len = u32::from_le_bytes(hash_len_buf) as u64;
+            consumed += 4;
+
+            let mut hash_buf = vec![0u8; hash_len as usize];
+            decoder.read_exact(&mut hash_buf)
+                .map_err(|e| GitkaError::Extraction(format!("Read error: {}", e)))?;
+            consumed += hash_len;
+
+            let mut placeholder_len_buf = [0u8; 8];
+            decoder.read_exact(&mut placeholder_len_buf)
+                .map_err(|e| GitkaError::Extraction(format!("Read error: {}", e)))?;
+            consumed += 8;
+        } else {
+            let mut content_len_buf = [0u8; 8];
+            decoder.read_exact(&mut content_len_buf)
+                .map_err(|e| GitkaError::Extraction(format!("Read error: {}", e)))?;
+            let content_len = u64::from_le_bytes(content_len_buf);
+            consumed += 8;
+
+            if frame_start == offset {
+                if content_len != length {
+                    return Err(GitkaError::Extraction(format!(
+                        "Dedup reference length mismatch: expected {}, found {}",
+                        length, content_len
+                    )));
+                }
+
+                let mut content = vec![0u8; content_len as usize];
+                decoder.read_exact(&mut content)
+                    .map_err(|e| GitkaError::Extraction(format!("Read error: {}", e)))?;
+                return Ok(content);
+            }
+
+            let mut sink = vec![0u8; content_len as usize];
+            decoder.read_exact(&mut sink)
+                .map_err(|e| GitkaError::Extraction(format!("Read error: {}", e)))?;
+            consumed += content_len;
+        }
+    }
+
+    Err(GitkaError::Extraction(format!(
+        "Unable to locate dedup source content at offset {} in {}",
+        offset,
+        archive_path.display()
+    )))
+}
+
+/// Open a decoder for an archive part, rewinding if there is no custom Gitka header.
+fn open_archive_file(part_path: &Path) -> Result<std::fs::File> {
+    let mut file = std::fs::File::open(part_path)
+        .map_err(|e| GitkaError::Extraction(format!("Failed to open archive: {}", e)))?;
+
+    let mut header_buf = [0u8; HEADER_SIZE];
+    let has_header = match file.read_exact(&mut header_buf) {
+        Ok(()) => header_buf[0..5] == *crate::archive::ARCHIVE_MAGIC,
+        Err(_) => false,
+    };
+
+    if has_header {
+        let header = ArchiveHeader::from_bytes(&header_buf)?;
+        header.validate()?;
+    } else {
+        file.seek(SeekFrom::Start(0))
+            .map_err(|e| GitkaError::Extraction(format!("Failed to rewind archive: {}", e)))?;
+    }
+
+    Ok(file)
 }
 
 /// Find all archive parts in order
@@ -735,34 +793,18 @@ fn find_archive_parts(archive_path: &Path) -> Result<Vec<String>> {
 
 /// Verify archive integrity (supports multi-volume)
 pub fn verify_archive(archive_path: &Path) -> Result<()> {
-    use std::fs::File;
-    use std::io::Read;
-    use zstd::stream::read::Decoder;
-
     let parts = find_archive_parts(archive_path)?;
 
-    for (idx, part_name) in parts.iter().enumerate() {
+    for part_name in parts.iter() {
         let part_path = archive_path.parent()
             .unwrap_or(Path::new("."))
             .join(part_name);
 
-        let mut file = File::open(&part_path)
+        let file = open_archive_file(&part_path)
             .map_err(|e| GitkaError::VerificationFailed(
                 part_path.display().to_string(),
-                format!("Failed to open: {}", e),
+                e.to_string(),
             ))?;
-
-        // Skip archive header on first part
-        if idx == 0 {
-            let mut header_buf = [0u8; HEADER_SIZE];
-            if file.read_exact(&mut header_buf).is_ok()
-                && header_buf[0..5] == *crate::archive::ARCHIVE_MAGIC
-            {
-                let header = ArchiveHeader::from_bytes(&header_buf)?;
-                header.validate()?;
-            }
-        }
-
         let mut decoder = Decoder::new(file)
             .map_err(|e| GitkaError::VerificationFailed(
                 part_path.display().to_string(),

@@ -19,4 +19,3 @@ gitflare-server/
 # opencode and codex for bug detection
 **/.codex/
 **/.opencode/
-**/.opencode/*

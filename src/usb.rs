@@ -5,6 +5,9 @@ use std::path::{Path, PathBuf};
 use crate::config::TargetMode;
 use crate::error::{GitkaError, Result};
 
+#[cfg(target_os = "macos")]
+use plist::Value as PlistValue;
+
 /// Information about a detected drive
 #[derive(Debug, Clone)]
 pub struct DriveInfo {
@@ -528,24 +531,33 @@ fn detect_removable_drives_macos() -> Result<Vec<DriveInfo>> {
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let plist: serde_json::Value = serde_json::from_str(&stdout)
-        .map_err(|e| GitkaError::UsbDetection(format!("Failed to parse diskutil plist: {}", e)))?;
+    let plist = parse_diskutil_plist(&stdout)?;
 
     let mut drives = Vec::new();
 
-    if let Some(all_disks) = plist["AllDisksAndPartitions"].as_array() {
+    if let Some(all_disks) = plist.as_dictionary()
+        .and_then(|dict| dict.get("AllDisksAndPartitions"))
+        .and_then(|value| value.as_array())
+    {
         for disk in all_disks {
-            // Get disk info
-            let disk_id = disk["DeviceIdentifier"].as_str().unwrap_or("");
-            let _disk_name = disk["VolumeName"].as_str().unwrap_or("");
+            let disk_dict = match disk.as_dictionary() {
+                Some(d) => d,
+                None => continue,
+            };
+            let disk_id = disk_dict.get("DeviceIdentifier").and_then(|v| v.as_string()).unwrap_or("");
+            let _disk_name = disk_dict.get("VolumeName").and_then(|v| v.as_string()).unwrap_or("");
 
             // Check partitions
-            if let Some(parts) = disk["Partitions"].as_array() {
+            if let Some(parts) = disk_dict.get("Partitions").and_then(|value| value.as_array()) {
                 for part in parts {
-                    let mount_point = part["MountPoint"].as_str().unwrap_or("");
-                    let fs_type = part["Content"].as_str().unwrap_or("unknown");
-                    let label = part["VolumeName"].as_str().map(|s| s.to_string());
-                    let size_bytes = part["Size"].as_u64().unwrap_or(0);
+                    let part_dict = match part.as_dictionary() {
+                        Some(d) => d,
+                        None => continue,
+                    };
+                    let mount_point = part_dict.get("MountPoint").and_then(|v| v.as_string()).unwrap_or("");
+                    let fs_type = part_dict.get("Content").and_then(|v| v.as_string()).unwrap_or("unknown");
+                    let label = part_dict.get("VolumeName").and_then(|v| v.as_string()).map(|s| s.to_string());
+                    let size_bytes = part_dict.get("Size").and_then(|v| v.as_unsigned_integer()).unwrap_or(0);
 
                     if !mount_point.is_empty() && !disk_id.is_empty() {
                         // Get free space via statvfs
@@ -588,21 +600,31 @@ fn detect_local_drives_macos() -> Result<Vec<DriveInfo>> {
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let plist: serde_json::Value = serde_json::from_str(&stdout)
-        .map_err(|e| GitkaError::UsbDetection(format!("Failed to parse diskutil plist: {}", e)))?;
+    let plist = parse_diskutil_plist(&stdout)?;
 
     let mut drives = Vec::new();
 
-    if let Some(all_disks) = plist["AllDisksAndPartitions"].as_array() {
+    if let Some(all_disks) = plist.as_dictionary()
+        .and_then(|dict| dict.get("AllDisksAndPartitions"))
+        .and_then(|value| value.as_array())
+    {
         for disk in all_disks {
-            let disk_id = disk["DeviceIdentifier"].as_str().unwrap_or("");
+            let disk_dict = match disk.as_dictionary() {
+                Some(d) => d,
+                None => continue,
+            };
+            let disk_id = disk_dict.get("DeviceIdentifier").and_then(|v| v.as_string()).unwrap_or("");
 
-            if let Some(parts) = disk["Partitions"].as_array() {
+            if let Some(parts) = disk_dict.get("Partitions").and_then(|value| value.as_array()) {
                 for part in parts {
-                    let mount_point = part["MountPoint"].as_str().unwrap_or("");
-                    let fs_type = part["Content"].as_str().unwrap_or("unknown");
-                    let label = part["VolumeName"].as_str().map(|s| s.to_string());
-                    let size_bytes = part["Size"].as_u64().unwrap_or(0);
+                    let part_dict = match part.as_dictionary() {
+                        Some(d) => d,
+                        None => continue,
+                    };
+                    let mount_point = part_dict.get("MountPoint").and_then(|v| v.as_string()).unwrap_or("");
+                    let fs_type = part_dict.get("Content").and_then(|v| v.as_string()).unwrap_or("unknown");
+                    let label = part_dict.get("VolumeName").and_then(|v| v.as_string()).map(|s| s.to_string());
+                    let size_bytes = part_dict.get("Size").and_then(|v| v.as_unsigned_integer()).unwrap_or(0);
 
                     if !mount_point.is_empty() && !disk_id.is_empty() {
                         let (total, free) = get_disk_space_statvfs_macos(
@@ -672,9 +694,11 @@ fn validate_removable_macos(path: &Path) -> Result<bool> {
 
         if output.status.success() {
             let stdout = String::from_utf8_lossy(&output.stdout);
-            if let Ok(plist) = serde_json::from_str::<serde_json::Value>(&stdout) {
-                // Check if "Protocol" is "USB" or "DeviceProtocol" indicates external
-                let protocol = plist["Protocol"].as_str().unwrap_or("");
+            if let Ok(plist) = parse_diskutil_plist(&stdout) {
+                let protocol = plist.as_dictionary()
+                    .and_then(|dict| dict.get("Protocol"))
+                    .and_then(|v| v.as_string())
+                    .unwrap_or("");
                 let removable = protocol == "USB" || protocol == "FireWire" || protocol == "Thunderbolt";
                 return Ok(removable);
             }
@@ -714,16 +738,26 @@ fn get_drive_info_macos(path: &Path) -> Result<DriveInfo> {
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let plist: serde_json::Value = serde_json::from_str(&stdout)
-        .map_err(|e| GitkaError::UsbDetection(format!("Failed to parse diskutil plist: {}", e)))?;
+    let plist = parse_diskutil_plist(&stdout)?;
 
-    let mount_point = plist["MountPoint"].as_str().unwrap_or("/");
-    let fs_type = plist["FileSystem"].as_str()
-        .or_else(|| plist["Content"].as_str())
+    let mount_point = plist.as_dictionary()
+        .and_then(|dict| dict.get("MountPoint"))
+        .and_then(|v| v.as_string())
+        .unwrap_or("/");
+    let fs_type = plist.as_dictionary()
+        .and_then(|dict| dict.get("FileSystem"))
+        .and_then(|v| v.as_string())
+        .or_else(|| plist.as_dictionary().and_then(|dict| dict.get("Content")).and_then(|v| v.as_string()))
         .unwrap_or("unknown")
         .to_string();
-    let label = plist["VolumeName"].as_str().map(|s| s.to_string());
-    let protocol = plist["Protocol"].as_str().unwrap_or("");
+    let label = plist.as_dictionary()
+        .and_then(|dict| dict.get("VolumeName"))
+        .and_then(|v| v.as_string())
+        .map(|s| s.to_string());
+    let protocol = plist.as_dictionary()
+        .and_then(|dict| dict.get("Protocol"))
+        .and_then(|v| v.as_string())
+        .unwrap_or("");
     let is_removable = protocol == "USB" || protocol == "FireWire" || protocol == "Thunderbolt";
 
     let (total_space, free_space) = get_disk_space_statvfs_macos(
@@ -738,6 +772,14 @@ fn get_drive_info_macos(path: &Path) -> Result<DriveInfo> {
         is_removable,
         label,
     })
+}
+
+#[cfg(target_os = "macos")]
+fn parse_diskutil_plist(stdout: &str) -> Result<PlistValue> {
+    use std::io::Cursor;
+
+    PlistValue::from_reader_xml(Cursor::new(stdout.as_bytes()))
+        .map_err(|e| GitkaError::UsbDetection(format!("Failed to parse diskutil plist: {}", e)))
 }
 
 // ============================================================================

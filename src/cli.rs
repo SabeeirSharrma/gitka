@@ -21,13 +21,20 @@ pub struct Cli {
     pub config: Option<PathBuf>,
 
     #[command(subcommand)]
-    pub command: Commands,
+    pub command: Option<Commands>,
 }
 
 #[derive(Subcommand)]
 pub enum Commands {
     /// Launch the GUI (future feature)
     Gui,
+
+    /// List detected USB/removable drives
+    Usb {
+        /// Emit JSON for machine consumers
+        #[arg(long)]
+        json: bool,
+    },
 
     /// Initialize a new Gitka backup
     Init {
@@ -67,6 +74,29 @@ pub enum Commands {
     /// Re-scan sources and target, show size report + budget check
     Scan,
 
+    /// Authenticate a GitHub account and store the token in config
+    Auth {
+        /// GitHub username or organization
+        #[arg(long)]
+        username: Option<String>,
+
+        /// GitHub personal access token
+        #[arg(long)]
+        token: Option<String>,
+
+        /// Verify the token against the GitHub API before saving
+        #[arg(long, default_value_t = true)]
+        verify: bool,
+
+        /// Show auth status instead of updating credentials
+        #[arg(long)]
+        status: bool,
+
+        /// Emit JSON for machine consumers
+        #[arg(long)]
+        json: bool,
+    },
+
     /// Sync repos (fetch/compare/push/pull/merge loop)
     Sync {
         /// Sync specific repos only (default: all)
@@ -79,6 +109,10 @@ pub enum Commands {
         /// Show status for specific repos only
         #[arg(short, long)]
         repos: Option<Vec<String>>,
+
+        /// Emit JSON for machine consumers
+        #[arg(long)]
+        json: bool,
     },
 
     /// Extract a repo for local-only offline commit access
@@ -187,7 +221,11 @@ impl Commands {
     /// Check if this command requires an initialized Gitka drive
     pub fn requires_init(&self) -> bool {
         match self {
-            Commands::Init { .. } | Commands::Gui | Commands::Wipe { .. } => false,
+            Commands::Init { .. }
+            | Commands::Gui
+            | Commands::Usb { .. }
+            | Commands::Wipe { .. }
+            | Commands::Auth { .. } => false,
             _ => true,
         }
     }

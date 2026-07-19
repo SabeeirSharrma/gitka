@@ -14,6 +14,7 @@ mod sync;
 mod usb;
 
 use clap::Parser;
+use serde::Serialize;
 use std::path::{Path, PathBuf};
 
 use cli::{Cli, Commands};
@@ -31,14 +32,29 @@ fn main() -> anyhow::Result<()> {
 
     let cli = Cli::parse();
 
-    // Execute command - init doesn't need config
-    match &cli.command {
-        Commands::Gui => {
-            println!("GUI not yet implemented. Use CLI commands instead.");
-            println!("Run `gitka --help` for available commands.");
+    // Execute commands that do not require an existing config first.
+    match cli.command.as_ref() {
+        None | Some(Commands::Gui) => {
+            launch_gui()?;
+            return Ok(());
         }
-        Commands::Init { source, target, username, token, gitflare_url, volume_size, dedup, interactive } => {
+        Some(Commands::Usb { json }) => {
+            cmd_usb(*json)?;
+            return Ok(());
+        }
+        Some(Commands::Init { source, target, username, token, gitflare_url, volume_size, dedup, interactive }) => {
             cmd_init(source, target, username.as_deref(), token.as_deref(), gitflare_url.as_deref(), *volume_size, *dedup, *interactive)?;
+            return Ok(());
+        }
+        Some(Commands::Auth { username, token, verify, status, json }) => {
+            cmd_auth(
+                cli.config.clone(),
+                username.as_deref(),
+                token.as_deref(),
+                *verify,
+                *status,
+                *json,
+            )?;
             return Ok(());
         }
         _ => {}
@@ -47,15 +63,15 @@ fn main() -> anyhow::Result<()> {
     // Load config for other commands
     let (config, config_path) = load_config(&cli)?;
 
-    match cli.command {
+    match cli.command.as_ref().expect("command already handled") {
         Commands::Scan => {
             cmd_scan(&config)?;
         }
         Commands::Sync { repos } => {
-            cmd_sync(&config, repos)?;
+            cmd_sync(&config, repos.clone())?;
         }
-        Commands::Status { repos } => {
-            cmd_status(&config, repos)?;
+        Commands::Status { repos, json } => {
+            cmd_status(&config, repos.clone(), *json)?;
         }
         Commands::Unlock { repo } => {
             cmd_unlock(&config, &repo)?;
@@ -64,28 +80,28 @@ fn main() -> anyhow::Result<()> {
             cmd_lock(&config, &repo)?;
         }
         Commands::Serve { repo, stop } => {
-            cmd_serve(&config, &repo, stop)?;
+            cmd_serve(&config, &repo, *stop)?;
         }
         Commands::Verify { repos, verbose } => {
-            cmd_verify(&config, repos, verbose)?;
+            cmd_verify(&config, repos.clone(), *verbose)?;
         }
         Commands::Repair { repo } => {
             cmd_repair(&config, &repo)?;
         }
         Commands::Config { set, get } => {
             let mut config = config;
-            cmd_config(&mut config, set, get, &config_path)?;
+            cmd_config(&mut config, set.clone(), get.clone(), &config_path)?;
         }
         Commands::Wipe { target, source, username, token, gitflare_url, filesystem, yes } => {
-            cmd_wipe(&target, &source, username.as_deref(), token.as_deref(), gitflare_url.as_deref(), filesystem.as_deref(), yes)?;
+            cmd_wipe(&target, &source, username.as_deref(), token.as_deref(), gitflare_url.as_deref(), filesystem.as_deref(), *yes)?;
             return Ok(());
         }
-        Commands::Import { ref repo_path, ref name } => {
+        Commands::Import { repo_path, name } => {
             let (config, _) = load_config(&cli)?;
-            cmd_import(&config, &repo_path, name.as_deref())?;
+            cmd_import(&config, repo_path, name.as_deref())?;
             return Ok(());
         }
-        Commands::TrainDict { ref source } => {
+        Commands::TrainDict { source } => {
             let (config, _) = load_config(&cli)?;
             cmd_train_dict(&config, source.as_deref())?;
             return Ok(());
@@ -122,6 +138,240 @@ fn load_config(cli: &Cli) -> Result<(Config, PathBuf)> {
     Ok((config, config_path))
 }
 
+#[derive(Debug, Serialize)]
+struct GitHubAuthResult {
+    authenticated: bool,
+    verified: bool,
+    login: Option<String>,
+    name: Option<String>,
+    username: Option<String>,
+    config_saved: bool,
+    config_path: Option<String>,
+    message: String,
+}
+
+fn find_existing_config_path(explicit: Option<&PathBuf>) -> Option<PathBuf> {
+    if let Some(path) = explicit {
+        if path.exists() {
+            return Some(path.clone());
+        }
+    }
+
+    let current_dir = std::env::current_dir().ok()?;
+    let home_dir = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+
+    let candidates = vec![
+        current_dir.join("gitka.toml"),
+        current_dir.join(".gitka").join("gitka.toml"),
+        home_dir.join(".gitka").join("gitka.toml"),
+    ];
+
+    candidates.into_iter().find(|path| path.exists())
+}
+
+fn launch_gui() -> Result<()> {
+    use std::process::Command;
+
+    let mut candidates: Vec<PathBuf> = Vec::new();
+
+    if let Ok(current_exe) = std::env::current_exe() {
+        if let Some(dir) = current_exe.parent() {
+            candidates.push(dir.join(if cfg!(target_os = "windows") { "gitka-gui.exe" } else { "gitka-gui" }));
+        }
+    }
+
+    candidates.push(PathBuf::from(if cfg!(target_os = "windows") { "gitka-gui.exe" } else { "gitka-gui" }));
+
+    let mut last_error: Option<std::io::Error> = None;
+    for candidate in candidates {
+        let result = Command::new(&candidate).spawn();
+        match result {
+            Ok(_) => {
+                println!("Launched GUI: {}", candidate.display());
+                return Ok(());
+            }
+            Err(e) => last_error = Some(e),
+        }
+    }
+
+    Err(GitkaError::Config(format!(
+        "Unable to launch Gitka GUI. Tried local `gitka-gui`/`gitka` binaries and PATH. Last error: {}",
+        last_error
+            .map(|e| e.to_string())
+            .unwrap_or_else(|| "unknown error".to_string())
+    )))
+}
+
+fn emit_auth_result(result: &GitHubAuthResult, json: bool) -> Result<()> {
+    if json {
+        println!("{}", serde_json::to_string_pretty(result).unwrap());
+    } else {
+        println!("{}", result.message);
+        if let Some(login) = &result.login {
+            println!("  login: {}", login);
+        }
+        if let Some(username) = &result.username {
+            println!("  username: {}", username);
+        }
+        if let Some(path) = &result.config_path {
+            println!("  config: {}", path);
+        }
+    }
+
+    Ok(())
+}
+
+fn cmd_auth(
+    explicit_config_path: Option<PathBuf>,
+    username: Option<&str>,
+    token: Option<&str>,
+    verify: bool,
+    status: bool,
+    json: bool,
+) -> Result<()> {
+    let existing_config_path = find_existing_config_path(explicit_config_path.as_ref());
+
+    if status {
+        let mut result = GitHubAuthResult {
+            authenticated: false,
+            verified: false,
+            login: None,
+            name: None,
+            username: None,
+            config_saved: false,
+            config_path: existing_config_path.as_ref().map(|p| p.display().to_string()),
+            message: "GitHub authentication is not configured.".to_string(),
+        };
+
+        if let Some(path) = existing_config_path.as_ref() {
+            let config = Config::load(path)?;
+            result.username = config.source.github_username.clone();
+            result.authenticated = config.source.auth_token.is_some();
+
+            if let Some(token) = config.source.auth_token.as_deref() {
+                if verify {
+                    match source::verify_github_token(token) {
+                        Ok(identity) => {
+                            result.verified = true;
+                            result.login = Some(identity.login.clone());
+                            result.name = identity.name.clone();
+                            if result.username.is_none() {
+                                result.username = Some(identity.login);
+                            }
+                            result.message = "GitHub authentication is configured and verified.".to_string();
+                        }
+                        Err(err) => {
+                            result.message = format!("GitHub authentication is configured, but verification failed: {}", err);
+                        }
+                    }
+                } else {
+                    result.message = "GitHub authentication is configured.".to_string();
+                }
+            } else {
+                result.message = "GitHub authentication is not configured.".to_string();
+            }
+        }
+
+        return emit_auth_result(&result, json);
+    }
+
+    let token = token.ok_or_else(|| {
+        GitkaError::Config("GitHub token is required. Pass --token or use `gitka init --token ...`.".to_string())
+    })?;
+
+    let verified_identity = if verify {
+        Some(source::verify_github_token(token)?)
+    } else {
+        None
+    };
+
+    let mut resolved_username = username.map(|s| s.to_string());
+    if resolved_username.is_none() {
+        if let Some(identity) = &verified_identity {
+            resolved_username = Some(identity.login.clone());
+        }
+    }
+
+    let mut config_saved = false;
+    let mut saved_path = explicit_config_path.clone().or(existing_config_path.clone());
+    if let Some(path) = saved_path.as_ref() {
+        let mut config = if path.exists() {
+            Config::load(path)?
+        } else {
+            Config::default()
+        };
+
+        config.source.github_username = resolved_username.clone();
+        config.source.auth_token = Some(token.to_string());
+
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        config.save(path)?;
+        config_saved = true;
+    }
+
+    let result = GitHubAuthResult {
+        authenticated: true,
+        verified: verified_identity.is_some(),
+        login: verified_identity.as_ref().map(|i| i.login.clone()).or_else(|| resolved_username.clone()),
+        name: verified_identity.as_ref().and_then(|i| i.name.clone()),
+        username: resolved_username,
+        config_saved,
+        config_path: saved_path.take().map(|p| p.display().to_string()),
+        message: if config_saved {
+            "GitHub authentication verified and saved.".to_string()
+        } else if verify {
+            "GitHub authentication verified.".to_string()
+        } else {
+            "GitHub authentication saved without verification.".to_string()
+        },
+    };
+
+    emit_auth_result(&result, json)
+}
+
+/// List detected removable drives for the GUI bridge.
+fn cmd_usb(json: bool) -> Result<()> {
+    let drives = usb::detect_drives(&config::TargetMode::Removable)?;
+
+    if json {
+        #[derive(Serialize)]
+        struct UsbDriveOutput {
+            path: String,
+            label: String,
+            size: String,
+            mountpoint: String,
+        }
+
+        let out: Vec<UsbDriveOutput> = drives.into_iter().map(|drive| UsbDriveOutput {
+            path: drive.mount_point.display().to_string(),
+            label: drive.label.unwrap_or_else(|| "-".to_string()),
+            size: format!("{}B", drive.total_space),
+            mountpoint: drive.mount_point.display().to_string(),
+        }).collect();
+
+        println!("{}", serde_json::to_string(&out).unwrap());
+        return Ok(());
+    }
+
+    println!("Path\tLabel\tSize\tMountpoint");
+
+    for drive in drives {
+        let label = drive.label.unwrap_or_else(|| "-".to_string());
+        let size = format!("{}B", drive.total_space);
+        println!(
+            "{}\t{}\t{}\t{}",
+            drive.mount_point.display(),
+            label,
+            size,
+            drive.mount_point.display(),
+        );
+    }
+
+    Ok(())
+}
+
 /// Initialize a new Gitka backup
 fn cmd_init(source: &str, target: &PathBuf, username: Option<&str>, token: Option<&str>, gitflare_url: Option<&str>, volume_size: Option<u64>, dedup: Option<bool>, interactive: bool) -> Result<()> {
     if interactive {
@@ -148,8 +398,17 @@ fn cmd_init(source: &str, target: &PathBuf, username: Option<&str>, token: Optio
 
     match source {
         "github" => {
-            config.source.github_username = username.map(|s| s.to_string());
-            config.source.auth_token = token.map(|s| s.to_string());
+            let token = token.ok_or_else(|| {
+                GitkaError::Config(
+                    "GitHub authentication is required. Pass --token or run `gitka auth github` first."
+                        .to_string(),
+                )
+            })?;
+            let identity = source::verify_github_token(token)?;
+            config.source.github_username = username
+                .map(|s| s.to_string())
+                .or_else(|| Some(identity.login.clone()));
+            config.source.auth_token = Some(token.to_string());
 
             if config.source.github_username.is_none() {
                 println!("\n⚠ Warning: No GitHub username provided.");
@@ -181,6 +440,8 @@ fn cmd_init(source: &str, target: &PathBuf, username: Option<&str>, token: Optio
         config.compression.dedup = dedup_on;
         println!("  Cross-repo dedup: {}", if dedup_on { "enabled" } else { "disabled" });
     }
+
+    config.ensure_encryption_salt();
 
     let config_path = target.join(".gitka").join("gitka.toml");
     config.save(&config_path)?;
@@ -236,14 +497,21 @@ fn cmd_init_interactive(target: &PathBuf) -> Result<()> {
                 config.source.github_username = Some(username);
             }
 
-            print!("GitHub token (optional, press Enter to skip): ");
+            print!("GitHub token (required): ");
             io::stdout().flush()?;
             let mut token = String::new();
             io::stdin().read_line(&mut token)?;
             let token = token.trim().to_string();
-            if !token.is_empty() {
-                config.source.auth_token = Some(token);
+            if token.is_empty() {
+                return Err(GitkaError::Config(
+                    "GitHub authentication is required. A personal access token must be provided.".to_string(),
+                ));
             }
+            let identity = source::verify_github_token(&token)?;
+            if config.source.github_username.is_none() {
+                config.source.github_username = Some(identity.login);
+            }
+            config.source.auth_token = Some(token);
         }
         "gitflare" => {
             print!("GitFlare URL: ");
@@ -325,6 +593,7 @@ fn cmd_init_interactive(target: &PathBuf) -> Result<()> {
     let mut encryption = String::new();
     io::stdin().read_line(&mut encryption)?;
     config.toggles.encryption = encryption.trim().to_lowercase() == "y";
+    config.ensure_encryption_salt();
 
     // Save config
     let config_path = target.join(".gitka").join("gitka.toml");
@@ -437,8 +706,17 @@ fn cmd_wipe(
 
     match source {
         "github" => {
-            config.source.github_username = username.map(|s| s.to_string());
-            config.source.auth_token = token.map(|s| s.to_string());
+            let token = token.ok_or_else(|| {
+                GitkaError::Config(
+                    "GitHub authentication is required. Pass --token or run `gitka auth github` first."
+                        .to_string(),
+                )
+            })?;
+            let identity = source::verify_github_token(token)?;
+            config.source.github_username = username
+                .map(|s| s.to_string())
+                .or_else(|| Some(identity.login.clone()));
+            config.source.auth_token = Some(token.to_string());
         }
         "gitflare" => {
             config.source.gitflare_url = gitflare_url.map(|s| s.to_string());
@@ -586,6 +864,8 @@ fn format_drive(target: &std::path::Path, fs_type: &str) -> Result<()> {
 #[cfg(target_os = "macos")]
 fn format_drive(target: &std::path::Path, fs_type: &str) -> Result<()> {
     use std::process::Command;
+    use plist::Value as PlistValue;
+    use std::io::Cursor;
 
     // Unmount first
     let _ = Command::new("diskutil")
@@ -599,10 +879,13 @@ fn format_drive(target: &std::path::Path, fs_type: &str) -> Result<()> {
         .map_err(|e| GitkaError::Config(format!("Failed to run diskutil: {}", e)))?;
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let plist: serde_json::Value = serde_json::from_str(&stdout)
+    let plist = PlistValue::from_reader_xml(Cursor::new(stdout.as_bytes()))
         .map_err(|e| GitkaError::Config(format!("Failed to parse diskutil output: {}", e)))?;
 
-    let disk_id = plist["DeviceNode"].as_str().unwrap_or("");
+    let disk_id = plist.as_dictionary()
+        .and_then(|dict| dict.get("DeviceNode"))
+        .and_then(|v| v.as_string())
+        .unwrap_or("");
 
     let output = match fs_type {
         "vfat" | "fat32" => {
@@ -836,10 +1119,8 @@ fn cmd_scan(config: &Config) -> Result<()> {
 
 /// Sync repos
 fn cmd_sync(config: &Config, repos: Option<Vec<String>>) -> Result<()> {
-    // Load dirty log
     let dirty_log = dirty::DirtyLog::load(config);
 
-    // Crash resilience: detect orphaned extracted repos
     if !dirty_log.is_empty() {
         let repo_manager = repo::RepoManager::new(config.clone());
         let all_repos = repo_manager.list_repos()?;
@@ -856,7 +1137,6 @@ fn cmd_sync(config: &Config, repos: Option<Vec<String>>) -> Result<()> {
             }
             println!();
 
-            // Recompress orphaned repos before continuing
             for name in &orphaned {
                 println!("Recompressing {}...", name);
                 match cmd_lock(config, name) {
@@ -870,38 +1150,27 @@ fn cmd_sync(config: &Config, repos: Option<Vec<String>>) -> Result<()> {
 
     println!("Syncing repos...");
 
-    // Get source provider
     let source_provider = source::create_source(&config.source)?;
     let auth = source_provider.auth_method();
-
-    // Get list of remote repos
     let remote_repos = source_provider.list_repos()?;
-
-    // Filter repos if specific ones requested
     let repos_to_sync: Vec<&source::RemoteRepo> = match &repos {
-        Some(names) => remote_repos.iter()
-            .filter(|r| names.contains(&r.name))
-            .collect(),
+        Some(names) => remote_repos.iter().filter(|r| names.contains(&r.name)).collect(),
         None => remote_repos.iter().collect(),
     };
 
     let repo_manager = repo::RepoManager::new(config.clone());
-
-    // Check SolidMode: FullArchive compresses all repos into a single stream
+    let mut synced_repos: Vec<String> = Vec::new();
     let is_full_archive = matches!(config.compression.solid, config::SolidMode::FullArchive);
 
     if is_full_archive && repos_to_sync.len() > 1 {
-        // FullArchive mode: compress all repos into a single archive
         println!("FullArchive mode: compressing {} repos into a single stream...", repos_to_sync.len());
 
-        // Create a temporary staging directory
         let staging_dir = std::env::temp_dir().join("gitka-full-archive-staging");
         if staging_dir.exists() {
             std::fs::remove_dir_all(&staging_dir)?;
         }
         std::fs::create_dir_all(&staging_dir)?;
 
-        // Clone/fetch each repo into the staging directory
         for remote_repo in &repos_to_sync {
             let repo_staging = staging_dir.join(&remote_repo.name);
             let local_meta = repo_manager.load_meta(&remote_repo.name).ok();
@@ -912,15 +1181,14 @@ fn cmd_sync(config: &Config, repos: Option<Vec<String>>) -> Result<()> {
                     continue;
                 }
                 if let Some(extraction_path) = &meta.extraction_path {
-                    // Copy extracted repo to staging
-                    std::fs::copy(extraction_path, &repo_staging)?;
+                    copy_dir_all(extraction_path, &repo_staging)?;
+                    synced_repos.push(remote_repo.name.clone());
                 }
             } else {
-                // Clone new repo to staging
                 let archive_dir = config.archive_dir();
                 std::fs::create_dir_all(&archive_dir)?;
                 match source::clone_repo(remote_repo, &staging_dir, &auth, true) {
-                    Ok(_) => {}
+                    Ok(_) => synced_repos.push(remote_repo.name.clone()),
                     Err(e) => {
                         println!("  ⚠ Failed to clone {}: {}", remote_repo.name, e);
                         continue;
@@ -929,7 +1197,6 @@ fn cmd_sync(config: &Config, repos: Option<Vec<String>>) -> Result<()> {
             }
         }
 
-        // Compress the entire staging directory into one archive
         let archive_dir = config.archive_dir();
         std::fs::create_dir_all(&archive_dir)?;
         let archive_path = archive_dir.join("full-archive.gitka.zst");
@@ -950,7 +1217,6 @@ fn cmd_sync(config: &Config, repos: Option<Vec<String>>) -> Result<()> {
                     store.save_index().ok();
                 }
 
-                // Create metadata for each repo pointing to the shared archive
                 for remote_repo in &repos_to_sync {
                     let meta = repo::RepoMeta {
                         name: remote_repo.name.clone(),
@@ -979,209 +1245,222 @@ fn cmd_sync(config: &Config, repos: Option<Vec<String>>) -> Result<()> {
             }
         }
 
-        // Clean up staging
         std::fs::remove_dir_all(&staging_dir).ok();
     } else {
-        // PerRepo mode (default): compress each repo separately
         for remote_repo in repos_to_sync {
-        // Incremental sync: skip repos not in dirty log (unless --repos was specified)
-        if repos.is_none() && !dirty_log.is_dirty(&remote_repo.name) {
-            // Check if repo exists and is archived — skip fetch entirely
-            if let Ok(meta) = repo_manager.load_meta(&remote_repo.name) {
+            if repos.is_none() && !dirty_log.is_dirty(&remote_repo.name) {
+                if let Ok(meta) = repo_manager.load_meta(&remote_repo.name) {
+                    if meta.state == repo::RepoState::Archived {
+                        println!("\nSkipping {} (not modified since last sync)", remote_repo.name);
+                        continue;
+                    }
+                }
+            }
+
+            println!("\nSyncing {}...", remote_repo.full_name);
+
+            let local_meta = repo_manager.load_meta(&remote_repo.name).ok();
+
+            if let Some(meta) = local_meta {
                 if meta.state == repo::RepoState::Archived {
-                    println!("\nSkipping {} (not modified since last sync)", remote_repo.name);
+                    println!("  Repo is archived, skipping fetch. Use `gitka unlock {}` to extract first.", remote_repo.name);
                     continue;
                 }
-            }
-        }
 
-        println!("\nSyncing {}...", remote_repo.full_name);
+                let extraction_path = meta.extraction_path
+                    .ok_or_else(|| GitkaError::Extraction(format!("No extraction path for {}", remote_repo.name)))?;
 
-        // Check if repo exists locally
-        let local_meta = repo_manager.load_meta(&remote_repo.name).ok();
+                println!("  Fetching updates...");
+                source::fetch_repo(&extraction_path, &auth)?;
 
-        if let Some(meta) = local_meta {
-            // Repo exists, fetch updates
-            if meta.state == repo::RepoState::Archived {
-                println!("  Repo is archived, skipping fetch. Use `gitka unlock {}` to extract first.", remote_repo.name);
-                continue;
-            }
-
-            let extraction_path = meta.extraction_path
-                .ok_or_else(|| GitkaError::Extraction(format!("No extraction path for {}", remote_repo.name)))?;
-
-            println!("  Fetching updates...");
-            source::fetch_repo(&extraction_path, &auth)?;
-
-            // Sync the repo
-            match sync::sync_repo(config, &remote_repo.name) {
-                Ok(status) => {
-                    match status {
-                        sync::SyncStatus::Ahead(n) => println!("  Pushed {} commits", n),
-                        sync::SyncStatus::Behind(n) => println!("  Pulled {} commits", n),
-                        sync::SyncStatus::InSync => println!("  Up to date"),
-                        sync::SyncStatus::Diverged { ahead, behind } => {
-                            println!("  Diverged ({} ahead, {} behind)", ahead, behind);
+                match sync::sync_repo(config, &remote_repo.name) {
+                    Ok(status) => {
+                        match status {
+                            sync::SyncStatus::Ahead(n) => println!("  Pushed {} commits", n),
+                            sync::SyncStatus::Behind(n) => println!("  Pulled {} commits", n),
+                            sync::SyncStatus::InSync => println!("  Up to date"),
+                            sync::SyncStatus::Diverged { ahead, behind } => {
+                                println!("  Diverged ({} ahead, {} behind)", ahead, behind);
+                            }
+                            sync::SyncStatus::Conflict(msg) => {
+                                println!("  CONFLICT: {}", msg);
+                            }
                         }
-                        sync::SyncStatus::Conflict(msg) => {
-                            println!("  CONFLICT: {}", msg);
-                        }
+                        synced_repos.push(remote_repo.name.clone());
+                    }
+                    Err(e) => {
+                        println!("  ⚠ Sync failed: {}", e);
                     }
                 }
-                Err(e) => {
-                    println!("  ⚠ Sync failed: {}", e);
-                }
-            }
-        } else {
-            // Repo doesn't exist, clone it
-            println!("  Cloning new repo...");
+            } else {
+                println!("  Cloning new repo...");
 
-            let archive_dir = config.archive_dir();
-            std::fs::create_dir_all(&archive_dir)?;
+                let archive_dir = config.archive_dir();
+                std::fs::create_dir_all(&archive_dir)?;
 
-            // Determine shallow based on config
-            let repo_config = config.get_repo(&remote_repo.name);
-            let shallow = match repo_config {
-                Ok(r) => !r.full_history,
-                Err(_) => true, // Default to shallow
-            };
+                let repo_config = config.get_repo(&remote_repo.name);
+                let shallow = match repo_config {
+                    Ok(r) => !r.full_history,
+                    Err(_) => true,
+                };
 
-            match source::clone_repo(remote_repo, &archive_dir, &auth, shallow) {
-                Ok(repo_path) => {
-                    let repo_size = source::repo_size(&repo_path)?;
+                match source::clone_repo(remote_repo, &archive_dir, &auth, shallow) {
+                    Ok(repo_path) => {
+                        let repo_size = source::repo_size(&repo_path)?;
 
-                    // Create repo metadata
-                    let meta = repo::RepoMeta {
-                        name: remote_repo.name.clone(),
-                        state: repo::RepoState::Archived,
-                        archive_path: PathBuf::from(format!("{}.gitka.zst", remote_repo.name)),
-                        archive_hash: None,
-                        archive_size: 0,
-                        volume_count: 1,
-                        archive_parts: Vec::new(),
-                        decompressed_size: Some(repo_size),
-                        last_synced: None,
-                        last_verified: None,
-                        extraction_path: None,
-                        dedup_enabled: false,
-                        dedup_bytes_saved: 0,
-                    };
+                        let meta = repo::RepoMeta {
+                            name: remote_repo.name.clone(),
+                            state: repo::RepoState::Archived,
+                            archive_path: PathBuf::from(format!("{}.gitka.zst", remote_repo.name)),
+                            archive_hash: None,
+                            archive_size: 0,
+                            volume_count: 1,
+                            archive_parts: Vec::new(),
+                            decompressed_size: Some(repo_size),
+                            last_synced: None,
+                            last_verified: None,
+                            extraction_path: None,
+                            dedup_enabled: false,
+                            dedup_bytes_saved: 0,
+                        };
 
-                    repo_manager.save_meta(&meta)?;
+                        repo_manager.save_meta(&meta)?;
 
-                    // Compress the repo
-                    println!("  Compressing...");
-                    let archive_path = archive_dir.join(format!("{}.gitka.zst", remote_repo.name));
+                        println!("  Compressing...");
+                        let archive_path = archive_dir.join(format!("{}.gitka.zst", remote_repo.name));
 
-                    // Initialize dedup store if enabled
-                    let mut dedup_store = if config.compression.dedup {
-                        let mut store = dedup::DedupStore::open(config);
-                        store.init().ok();
-                        store.load_index().ok();
-                        Some(store)
-                    } else {
-                        None
-                    };
+                        let mut dedup_store = if config.compression.dedup {
+                            let mut store = dedup::DedupStore::open(config);
+                            store.init().ok();
+                            store.load_index().ok();
+                            Some(store)
+                        } else {
+                            None
+                        };
 
-                    match compress::compress_directory_with_options(&repo_path, &archive_path, &config.compression, dedup_store.as_mut()) {
-                        Ok(result) => {
-                            // Calculate hash of first part
-                            let hash = compress::calculate_hash(&archive_path)?;
+                        match compress::compress_directory_with_options(&repo_path, &archive_path, &config.compression, dedup_store.as_mut()) {
+                            Ok(result) => {
+                                let hash = compress::calculate_hash(&archive_path)?;
 
-                            // Update metadata with archive info
-                            let mut meta = repo_manager.load_meta(&remote_repo.name)?;
-                            meta.archive_size = result.total_size;
-                            meta.archive_hash = Some(hash);
-                            meta.volume_count = result.volume_count;
-                            meta.archive_parts = result.part_files.clone();
-                            meta.dedup_enabled = config.compression.dedup;
-                            meta.dedup_bytes_saved = result.dedup_bytes_saved;
-                            repo_manager.save_meta(&meta)?;
+                                let mut meta = repo_manager.load_meta(&remote_repo.name)?;
+                                meta.archive_size = result.total_size;
+                                meta.archive_hash = Some(hash);
+                                meta.volume_count = result.volume_count;
+                                meta.archive_parts = result.part_files.clone();
+                                meta.dedup_enabled = config.compression.dedup;
+                                meta.dedup_bytes_saved = result.dedup_bytes_saved;
+                                repo_manager.save_meta(&meta)?;
 
-                            // Save dedup index
-                            if let Some(store) = dedup_store.as_ref() {
-                                store.save_index().ok();
-                            }
+                                if let Some(store) = dedup_store.as_ref() {
+                                    store.save_index().ok();
+                                }
 
-                            let dedup_info = if result.dedup_bytes_saved > 0 {
-                                format!(", dedup saved {:.1} MB", result.dedup_bytes_saved as f64 / 1_048_576.0)
-                            } else {
-                                String::new()
-                            };
-                            let volume_info = if result.volume_count > 1 {
-                                format!(", {} parts", result.volume_count)
-                            } else {
-                                String::new()
-                            };
+                                let dedup_info = if result.dedup_bytes_saved > 0 {
+                                    format!(", dedup saved {:.1} MB", result.dedup_bytes_saved as f64 / 1_048_576.0)
+                                } else {
+                                    String::new()
+                                };
+                                let volume_info = if result.volume_count > 1 {
+                                    format!(", {} parts", result.volume_count)
+                                } else {
+                                    String::new()
+                                };
 
-                            println!("  ✓ Cloned and compressed ({:.1} MB archive, {:.1} MB source{}{})",
-                                result.total_size as f64 / 1_048_576.0,
-                                repo_size as f64 / 1_048_576.0,
-                                volume_info,
-                                dedup_info);
+                                println!("  ✓ Cloned and compressed ({:.1} MB archive, {:.1} MB source{}{})",
+                                    result.total_size as f64 / 1_048_576.0,
+                                    repo_size as f64 / 1_048_576.0,
+                                    volume_info,
+                                    dedup_info);
 
-                            // Encrypt if enabled (per-volume)
-                            if config.toggles.encryption {
-                                if let Some(key) = config.get_encryption_key() {
-                                    println!("  Encrypting...");
-                                    match encryption::encrypt_parts(&archive_path, &result.part_files, &key) {
-                                        Ok(enc_size) => {
-                                            println!("  ✓ Encrypted ({:.1} MB)", enc_size as f64 / 1_048_576.0);
+                                if config.toggles.encryption {
+                                    if let Some(key) = config.get_encryption_key() {
+                                        println!("  Encrypting...");
+                                        match encryption::encrypt_parts(&archive_path, &result.part_files, &key) {
+                                            Ok(enc_size) => {
+                                                println!("  ✓ Encrypted ({:.1} MB)", enc_size as f64 / 1_048_576.0);
+                                            }
+                                            Err(e) => {
+                                                println!("  ⚠ Encryption failed: {}", e);
+                                            }
+                                        }
+                                    } else {
+                                        println!("  ⚠ Encryption enabled but no password configured");
+                                    }
+                                }
+
+                                if config.toggles.recovery_records && recovery::is_par2_available() {
+                                    println!("  Creating recovery records...");
+                                    let recovery_dir = config.recovery_dir().join(&remote_repo.name);
+                                    match recovery::create_recovery_parts(&archive_path, &result.part_files, &recovery_dir, 25) {
+                                        Ok(infos) => {
+                                            let total_recovery: u64 = infos.iter().map(|i| i.recovery_size).sum();
+                                            println!("  ✓ Recovery records created ({:.1} MB, {} parts)",
+                                                total_recovery as f64 / 1_048_576.0,
+                                                infos.len());
                                         }
                                         Err(e) => {
-                                            println!("  ⚠ Encryption failed: {}", e);
+                                            println!("  ⚠ Recovery record creation failed: {}", e);
                                         }
                                     }
-                                } else {
-                                    println!("  ⚠ Encryption enabled but no password configured");
                                 }
-                            }
 
-                            // Create recovery records if enabled (per-volume)
-                            if config.toggles.recovery_records && recovery::is_par2_available() {
-                                println!("  Creating recovery records...");
-                                let recovery_dir = config.recovery_dir().join(&remote_repo.name);
-                                match recovery::create_recovery_parts(&archive_path, &result.part_files, &recovery_dir, 25) {
-                                    Ok(infos) => {
-                                        let total_recovery: u64 = infos.iter().map(|i| i.recovery_size).sum();
-                                        println!("  ✓ Recovery records created ({:.1} MB, {} parts)",
-                                            total_recovery as f64 / 1_048_576.0,
-                                            infos.len());
-                                    }
-                                    Err(e) => {
-                                        println!("  ⚠ Recovery record creation failed: {}", e);
-                                    }
-                                }
+                                std::fs::remove_dir_all(&repo_path)?;
+                                synced_repos.push(remote_repo.name.clone());
                             }
-
-                            // Clean up the extracted repo
-                            std::fs::remove_dir_all(&repo_path)?;
-                        }
-                        Err(e) => {
-                            println!("  ⚠ Compression failed: {}", e);
-                            println!("  Repo remains at: {}", repo_path.display());
+                            Err(e) => {
+                                println!("  ⚠ Compression failed: {}", e);
+                                println!("  Repo remains at: {}", repo_path.display());
+                            }
                         }
                     }
-                }
-                Err(e) => {
-                    println!("  ⚠ Clone failed: {}", e);
+                    Err(e) => {
+                        println!("  ⚠ Clone failed: {}", e);
+                    }
                 }
             }
         }
-        } // end for remote_repo
     }
 
-    // Clear dirty log only after successful sync
-    let mut dirty_log = dirty::DirtyLog::load(config);
-    dirty_log.clear_all();
-    dirty_log.save(config)?;
+    if !synced_repos.is_empty() {
+        let mut dirty_log = dirty::DirtyLog::load(config);
+        for repo_name in synced_repos {
+            dirty_log.clear_repo(&repo_name);
+        }
+        dirty_log.save(config)?;
+    }
 
     println!("\n✓ Sync complete");
     Ok(())
 }
 
+/// Recursively copy a directory tree.
+fn copy_dir_all(src: impl AsRef<Path>, dst: impl AsRef<Path>) -> Result<()> {
+    let src = src.as_ref();
+    let dst = dst.as_ref();
+
+    std::fs::create_dir_all(dst)?;
+
+    for entry in walkdir::WalkDir::new(src) {
+        let entry = entry.map_err(|e| GitkaError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+        let path = entry.path();
+        let rel = path.strip_prefix(src).map_err(|e| GitkaError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+        let target = dst.join(rel);
+
+        if entry.file_type().is_dir() {
+            std::fs::create_dir_all(&target)?;
+        } else if entry.file_type().is_file() {
+            if let Some(parent) = target.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::copy(path, &target)?;
+        }
+    }
+
+    Ok(())
+}
+
 /// Show status
-fn cmd_status(config: &Config, repos: Option<Vec<String>>) -> Result<()> {
+fn cmd_status(config: &Config, repos: Option<Vec<String>>, json: bool) -> Result<()> {
     let repo_manager = repo::RepoManager::new(config.clone());
     let all_repos = repo_manager.list_repos()?;
     let dirty_log = dirty::DirtyLog::load(config);
@@ -1192,6 +1471,55 @@ fn cmd_status(config: &Config, repos: Option<Vec<String>>) -> Result<()> {
             .collect(),
         None => all_repos.iter().collect(),
     };
+
+    if json {
+        #[derive(Serialize)]
+        struct StatusOutput {
+            name: String,
+            state: String,
+            last_synced: String,
+            archive_size: String,
+            session: String,
+        }
+
+        let out: Vec<StatusOutput> = repos_to_show
+            .into_iter()
+            .map(|repo| {
+                let session_info = if let Some(entry) = dirty_log.entries.get(&repo.name) {
+                    let age = dirty::format_age(dirty::current_timestamp().saturating_sub(entry.timestamp));
+                    let action = match entry.action {
+                        dirty::DirtyAction::Unlock => "unlocked",
+                        dirty::DirtyAction::Serve => "serving",
+                        dirty::DirtyAction::Modified => "modified",
+                    };
+                    let commits = if entry.commits.len() > 1 {
+                        format!(" ({} commits)", entry.commits.len() - 1)
+                    } else {
+                        String::new()
+                    };
+                    let files = if !entry.files_touched.is_empty() {
+                        format!(", {} files", entry.files_touched.len())
+                    } else {
+                        String::new()
+                    };
+                    format!("{} {}{}{}", action, age, commits, files)
+                } else {
+                    String::new()
+                };
+
+                StatusOutput {
+                    name: repo.name.clone(),
+                    state: format!("{:?}", repo.state),
+                    last_synced: repo.last_synced.as_deref().unwrap_or("never").to_string(),
+                    archive_size: format!("{:.1} MB", repo.archive_size as f64 / 1_048_576.0),
+                    session: session_info,
+                }
+            })
+            .collect();
+
+        println!("{}", serde_json::to_string(&out).unwrap());
+        return Ok(());
+    }
 
     println!("Repository Status:");
     println!("{:<30} {:<15} {:<15} {:<20} {}", "Name", "State", "Last Synced", "Archive Size", "Session");
@@ -1938,6 +2266,7 @@ fn cmd_config(config: &mut Config, set: Option<String>, get: Option<String>, con
                     "false" => config.toggles.encryption = false,
                     _ => { println!("Invalid value. Use: true | false"); return Ok(()); }
                 }
+                config.ensure_encryption_salt();
             }
             "toggles.recovery_records" => {
                 match value {

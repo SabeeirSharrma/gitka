@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::process::Command;
+use std::path::PathBuf;
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -31,10 +32,46 @@ pub struct UsbDrive {
     pub mountpoint: String,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct GitHubAuthResult {
+    pub authenticated: bool,
+    pub verified: bool,
+    pub login: Option<String>,
+    pub name: Option<String>,
+    pub username: Option<String>,
+    pub config_saved: bool,
+    pub config_path: Option<String>,
+    pub message: String,
+}
+
 // ── Helpers ───────────────────────────────────────────────────────
 
+fn resolve_gitka_binary() -> Command {
+    let current_exe = std::env::current_exe().ok();
+    let candidates: Vec<PathBuf> = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|dir| {
+            vec![
+                dir.join(if cfg!(target_os = "windows") { "gitka.exe" } else { "gitka" }),
+                dir.join(if cfg!(target_os = "windows") { "gitka-gui.exe" } else { "gitka-gui" }),
+            ]
+        }))
+        .unwrap_or_default();
+
+    for candidate in candidates {
+        if current_exe.as_ref().is_some_and(|exe| exe == &candidate) {
+            continue;
+        }
+        if candidate.exists() {
+            return Command::new(candidate);
+        }
+    }
+
+    Command::new("gitka")
+}
+
 fn gitka_cmd(args: &[&str]) -> Result<String, String> {
-    let output = Command::new("gitka")
+    let output = resolve_gitka_binary()
         .args(args)
         .output()
         .map_err(|e| format!("Failed to run gitka: {}", e))?;
@@ -54,29 +91,13 @@ fn gitka_cmd(args: &[&str]) -> Result<String, String> {
 #[tauri::command]
 fn get_status(config_path: Option<String>) -> Result<Vec<RepoStatus>, String> {
     let args = if let Some(ref cfg) = config_path {
-        vec!["--config", cfg.as_str(), "status"]
+        vec!["--config", cfg.as_str(), "status", "--json"]
     } else {
-        vec!["status"]
+        vec!["status", "--json"]
     };
 
     let output = gitka_cmd(&args)?;
-    let mut repos = Vec::new();
-
-    for line in output.lines() {
-        // Parse status output: name state last_synced archive_size session
-        let parts: Vec<&str> = line.split_whitespace().collect();
-        if parts.len() >= 4 && !parts[0].starts_with('-') && parts[0] != "Name" && parts[0] != "Repository" {
-            repos.push(RepoStatus {
-                name: parts[0].to_string(),
-                state: parts[1].to_string(),
-                last_synced: parts.get(2).unwrap_or(&"").to_string(),
-                archive_size: parts.get(3).unwrap_or(&"").to_string(),
-                session: parts[4..].join(" "),
-            });
-        }
-    }
-
-    Ok(repos)
+    serde_json::from_str(&output).map_err(|e| format!("Failed to parse status JSON: {}", e))
 }
 
 #[tauri::command]
@@ -205,8 +226,8 @@ fn set_config(config_path: Option<String>, key: String, value: String) -> Result
     let kv = format!("{}={}", key, value);
 
     let mut owned: Vec<String> = Vec::new();
-    owned.push("--config".into());
     if let Some(ref cfg) = config_path {
+        owned.push("--config".into());
         owned.push(cfg.clone());
     }
     owned.push("config".into());
@@ -215,6 +236,41 @@ fn set_config(config_path: Option<String>, key: String, value: String) -> Result
 
     let refs: Vec<&str> = owned.iter().map(|s| s.as_str()).collect();
     gitka_cmd(&refs)
+}
+
+#[tauri::command]
+fn auth_github(
+    config_path: Option<String>,
+    username: Option<String>,
+    token: Option<String>,
+    verify: bool,
+    status: bool,
+) -> Result<GitHubAuthResult, String> {
+    let mut owned: Vec<String> = Vec::new();
+    if let Some(ref cfg) = config_path {
+        owned.push("--config".into());
+        owned.push(cfg.clone());
+    }
+    owned.push("auth".into());
+    if let Some(u) = username {
+        owned.push("--username".into());
+        owned.push(u);
+    }
+    if let Some(t) = token {
+        owned.push("--token".into());
+        owned.push(t);
+    }
+    if verify {
+        owned.push("--verify".into());
+    }
+    if status {
+        owned.push("--status".into());
+    }
+    owned.push("--json".into());
+
+    let refs: Vec<&str> = owned.iter().map(|s| s.as_str()).collect();
+    let output = gitka_cmd(&refs)?;
+    serde_json::from_str(&output).map_err(|e| format!("Failed to parse auth JSON: {}", e))
 }
 
 #[tauri::command]
@@ -248,13 +304,18 @@ fn import_repo(config_path: Option<String>, path: String, name: Option<String>) 
 }
 
 #[tauri::command]
-fn train_dict(config_path: Option<String>) -> Result<String, String> {
+fn train_dict(config_path: Option<String>, source: Option<String>) -> Result<String, String> {
     let mut args: Vec<&str> = Vec::new();
     if let Some(ref cfg) = config_path {
         args.push("--config");
         args.push(cfg.as_str());
     }
     args.push("train-dict");
+
+    if let Some(ref src) = source {
+        args.push("--source");
+        args.push(src.as_str());
+    }
 
     gitka_cmd(&args)
 }
@@ -344,23 +405,8 @@ fn wipe_drive(
 
 #[tauri::command]
 fn detect_usb_drives() -> Result<Vec<UsbDrive>, String> {
-    let output = gitka_cmd(&["usb"])?;
-
-    let mut drives = Vec::new();
-    for line in output.lines() {
-        // Parse usb output: path label size mountpoint
-        let parts: Vec<&str> = line.split_whitespace().collect();
-        if parts.len() >= 2 && !parts[0].starts_with('-') && parts[0] != "Path" && parts[0] != "No" {
-            drives.push(UsbDrive {
-                path: parts[0].to_string(),
-                label: parts.get(1).unwrap_or(&"").to_string(),
-                size: parts.get(2).unwrap_or(&"unknown").to_string(),
-                mountpoint: parts.get(3).unwrap_or(&"").to_string(),
-            });
-        }
-    }
-
-    Ok(drives)
+    let output = gitka_cmd(&["usb", "--json"])?;
+    serde_json::from_str(&output).map_err(|e| format!("Failed to parse USB JSON: {}", e))
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -374,22 +420,11 @@ fn check_drive(target: String) -> Result<DriveStatus, String> {
     let config_path = format!("{}/.gitka/gitka.toml", target);
 
     // Check if initialized by trying to get status
-    let args = vec!["--config", &config_path, "status"];
+    let args = vec!["--config", &config_path, "status", "--json"];
     match gitka_cmd(&args) {
         Ok(output) => {
-            let mut repos = Vec::new();
-            for line in output.lines() {
-                let parts: Vec<&str> = line.split_whitespace().collect();
-                if parts.len() >= 4 && !parts[0].starts_with('-') && parts[0] != "Name" && parts[0] != "Repository" {
-                    repos.push(RepoStatus {
-                        name: parts[0].to_string(),
-                        state: parts[1].to_string(),
-                        last_synced: parts.get(2).unwrap_or(&"").to_string(),
-                        archive_size: parts.get(3).unwrap_or(&"").to_string(),
-                        session: parts[4..].join(" "),
-                    });
-                }
-            }
+            let repos: Vec<RepoStatus> = serde_json::from_str(&output)
+                .map_err(|e| format!("Failed to parse status JSON: {}", e))?;
             Ok(DriveStatus { initialized: true, repos })
         }
         Err(_) => Ok(DriveStatus { initialized: false, repos: Vec::new() }),
@@ -433,6 +468,7 @@ pub fn run() {
             repair_repo,
             get_config,
             set_config,
+            auth_github,
             scan_repos,
             import_repo,
             train_dict,

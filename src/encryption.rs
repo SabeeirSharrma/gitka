@@ -223,22 +223,26 @@ pub fn decrypt_parts(
     Ok(total_decrypted)
 }
 
-/// Derive a key from a password using PBKDF2
+/// Derive a key from a password using iterated SHA-256.
+///
+/// This is still not a full PBKDF2 implementation, but it does chain rounds
+/// instead of hashing each iteration independently.
 pub fn derive_key(password: &str, salt: &[u8]) -> EncryptionKey {
     use sha2::{Sha256, Digest};
 
     let mut key = [0u8; 32];
-    let mut hasher = Sha256::new();
+    let mut block = Vec::new();
 
-    // Simple PBKDF2-like derivation (for production, use proper PBKDF2)
     for i in 0..10000 {
+        let mut hasher = Sha256::new();
+        hasher.update(&block);
         hasher.update(password.as_bytes());
         hasher.update(salt);
         hasher.update(&(i as u32).to_le_bytes());
-        let result = hasher.finalize();
-        key.copy_from_slice(&result);
-        hasher = Sha256::new();
+        block = hasher.finalize().to_vec();
     }
+
+    key.copy_from_slice(&block[..32]);
 
     key
 }

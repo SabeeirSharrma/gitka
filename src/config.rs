@@ -245,23 +245,35 @@ impl Config {
 
         let enc_config = self.encryption.as_ref()?;
         let password = enc_config.password.as_ref()?;
+        let salt_hex = enc_config.salt.as_ref()?;
 
-        let salt = if let Some(salt_hex) = &enc_config.salt {
-            // Decode hex salt
-            let mut salt = [0u8; 16];
-            let bytes = hex::decode(salt_hex).ok()?;
-            if bytes.len() != 16 {
-                return None;
-            }
-            salt.copy_from_slice(&bytes);
-            salt
-        } else {
-            // Generate new salt
-            let salt = encryption::generate_salt();
-            // Note: We should save this salt, but for now just use it
-            salt
-        };
+        // Decode persisted hex salt.
+        let mut salt = [0u8; 16];
+        let bytes = hex::decode(salt_hex).ok()?;
+        if bytes.len() != 16 {
+            return None;
+        }
+        salt.copy_from_slice(&bytes);
 
         Some(encryption::derive_key(password, &salt))
+    }
+
+    /// Ensure encryption has a persisted salt when encryption is enabled.
+    pub fn ensure_encryption_salt(&mut self) {
+        if !self.toggles.encryption {
+            return;
+        }
+
+        if self.encryption.is_none() {
+            self.encryption = Some(EncryptionConfig {
+                password: None,
+                salt: None,
+            });
+        }
+
+        let enc = self.encryption.as_mut().unwrap();
+        if enc.salt.is_none() {
+            enc.salt = Some(hex::encode(encryption::generate_salt()));
+        }
     }
 }
