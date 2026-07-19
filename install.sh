@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Gitka installer — Linux & macOS
-# Builds from source using cargo, installs gitka to /usr/local/bin (default).
+# Builds CLI and GUI from source, installs to /usr/local/bin (default).
 #
 # Usage:
 #   curl -sSf https://sabeeir.qd.je/gitka/install.sh | bash
@@ -9,15 +9,16 @@
 set -euo pipefail
 
 REPO="SabeeirSharrma/gitka"
-BIN="gitka"
 INSTALL_DIR="/usr/local/bin"
 SKIP_RUST_INSTALL="${SKIP_RUST_INSTALL:-}"
+CLI_ONLY="${CLI_ONLY:-}"
 
-# Parse --prefix
+# Parse flags
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --prefix) INSTALL_DIR="$2"; shift 2 ;;
     --prefix=*) INSTALL_DIR="${1#*=}"; shift ;;
+    --cli-only) CLI_ONLY=1; shift ;;
     *) echo "Unknown option: $1"; exit 1 ;;
   esac
 done
@@ -69,32 +70,75 @@ fi
 command -v cargo >/dev/null 2>&1 || err "Cargo still not available."
 ok "Dependencies OK"
 
-# ── Build & install ──────────────────────────────────────────────────
-info "Building $BIN from source (this may take a few minutes)..."
-cargo install --git "https://github.com/$REPO" --locked 2>&1
+# ── Clone & build ────────────────────────────────────────────────────
+BUILD_DIR="$HOME/.cache/gitka-install-$$"
+trap 'rm -rf "$BUILD_DIR"' EXIT
 
-BIN_PATH="$(which "$BIN" 2>/dev/null || echo "$HOME/.cargo/bin/$BIN")"
-if [ ! -f "$BIN_PATH" ]; then
-  err "Build completed but $BIN binary not found. Check your cargo bin directory."
+info "Cloning Gitka..."
+git clone --depth 1 "https://github.com/$REPO" "$BUILD_DIR" 2>/dev/null
+
+# ── Build CLI ────────────────────────────────────────────────────────
+info "Building CLI (this may take a few minutes)..."
+cargo build --release --bin gitka --manifest-path "$BUILD_DIR/Cargo.toml" 2>&1
+
+CLI_BIN="$BUILD_DIR/target/release/gitka"
+if [ ! -f "$CLI_BIN" ]; then
+  err "CLI build completed but binary not found at $CLI_BIN"
 fi
 
-info "Installing to $INSTALL_DIR/$BIN..."
+info "Installing CLI to $INSTALL_DIR/gitka..."
 mkdir -p "$INSTALL_DIR" 2>/dev/null || true
 if [ -w "$INSTALL_DIR" ]; then
-  cp "$BIN_PATH" "$INSTALL_DIR/$BIN"
+  cp "$CLI_BIN" "$INSTALL_DIR/gitka"
 else
-  sudo cp "$BIN_PATH" "$INSTALL_DIR/$BIN"
+  sudo cp "$CLI_BIN" "$INSTALL_DIR/gitka"
 fi
-chmod +x "$INSTALL_DIR/$BIN"
+chmod +x "$INSTALL_DIR/gitka"
+ok "CLI installed to $INSTALL_DIR/gitka"
 
-ok "$BIN installed to $INSTALL_DIR/$BIN"
+# ── Build GUI (optional) ────────────────────────────────────────────
+if [ -z "$CLI_ONLY" ] && [ -d "$BUILD_DIR/src-tauri" ]; then
+  info "Building GUI..."
+
+  # Install tauri-cli if not present
+  if ! cargo tauri --version >/dev/null 2>&1; then
+    info "Installing tauri-cli..."
+    cargo install tauri-cli --locked 2>&1
+  fi
+
+  if cargo tauri build --release --manifest-path "$BUILD_DIR/src-tauri/Cargo.toml" 2>&1; then
+    # Find the built binary (location varies by platform)
+    GUI_BIN=""
+    if [ "$OS" = "Darwin" ]; then
+      GUI_BIN="$BUILD_DIR/src-tauri/target/release/bundle/macos/Gitka.app/Contents/MacOS/gitka-gui"
+    else
+      GUI_BIN="$BUILD_DIR/src-tauri/target/release/gitka-gui"
+    fi
+
+    if [ -f "$GUI_BIN" ]; then
+      if [ -w "$INSTALL_DIR" ]; then
+        cp "$GUI_BIN" "$INSTALL_DIR/gitka-gui"
+      else
+        sudo cp "$GUI_BIN" "$INSTALL_DIR/gitka-gui"
+      fi
+      chmod +x "$INSTALL_DIR/gitka-gui"
+      ok "GUI installed to $INSTALL_DIR/gitka-gui"
+    else
+      warn "GUI binary not found at expected location. CLI was installed successfully."
+    fi
+  else
+    warn "GUI build failed. CLI was installed successfully."
+  fi
+elif [ -n "$CLI_ONLY" ]; then
+  info "Skipping GUI (--cli-only flag)"
+fi
 
 # ── Verify ───────────────────────────────────────────────────────────
-if command -v "$BIN" >/dev/null 2>&1; then
-  VERSION=$("$BIN" --version 2>/dev/null || echo "unknown")
-  ok "$BIN $VERSION is ready!"
+if command -v gitka >/dev/null 2>&1; then
+  VERSION=$(gitka --version 2>/dev/null || echo "unknown")
+  ok "gitka $VERSION is ready!"
 else
-  warn "Installed but '$BIN' not found in PATH."
+  warn "Installed but 'gitka' not found in PATH."
   warn "Make sure $INSTALL_DIR is in your PATH."
 fi
 

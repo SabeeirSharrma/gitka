@@ -215,6 +215,21 @@ pub enum Commands {
         #[arg(short, long)]
         source: Option<PathBuf>,
     },
+
+    /// Update Gitka CLI and GUI to the latest version
+    Update {
+        /// Only check for updates without installing
+        #[arg(long)]
+        check: bool,
+
+        /// Skip rebuilding the GUI
+        #[arg(long)]
+        no_gui: bool,
+
+        /// Emit JSON for machine consumers
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 impl Commands {
@@ -225,7 +240,8 @@ impl Commands {
             | Commands::Gui
             | Commands::Usb { .. }
             | Commands::Wipe { .. }
-            | Commands::Auth { .. } => false,
+            | Commands::Auth { .. }
+            | Commands::Update { .. } => false,
             _ => true,
         }
     }

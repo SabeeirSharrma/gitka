@@ -106,6 +106,10 @@ fn main() -> anyhow::Result<()> {
             cmd_train_dict(&config, source.as_deref())?;
             return Ok(());
         }
+        Commands::Update { check, no_gui, json } => {
+            cmd_update(*check, *no_gui, *json)?;
+            return Ok(());
+        }
         _ => unreachable!(),
     }
 
@@ -2514,6 +2518,241 @@ fn cmd_train_dict(config: &Config, source: Option<&std::path::Path>) -> Result<(
             println!("  ✗ Training failed: {}", e);
             println!("\n  Try running `gitka sync` first to have some repos to train from.");
         }
+    }
+
+    Ok(())
+}
+
+/// Update Gitka CLI and GUI to the latest version
+fn cmd_update(check_only: bool, no_gui: bool, json: bool) -> Result<()> {
+    let current_version = env!("CARGO_PKG_VERSION");
+    println!("Current version: {}", current_version);
+    println!("Checking for updates...\n");
+
+    // Fetch latest release from GitHub API
+    let client = reqwest::blocking::Client::builder()
+        .user_agent("gitka-updater")
+        .build()
+        .map_err(|e| GitkaError::Config(format!("Failed to create HTTP client: {}", e)))?;
+
+    let api_url = "https://api.github.com/repos/SabeeirSharrma/gitka/releases/latest";
+    let response = client
+        .get(api_url)
+        .send()
+        .map_err(|e| GitkaError::Config(format!("Failed to check for updates: {}", e)))?;
+
+    if !response.status().is_success() {
+        let msg = format!("GitHub API returned status {}", response.status());
+        if json {
+            println!("{}", serde_json::to_string(&serde_json::json!({
+                "update_available": false,
+                "error": msg
+            })).unwrap());
+        } else {
+            println!("✗ {}", msg);
+        }
+        return Ok(());
+    }
+
+    let release: serde_json::Value = response
+        .json()
+        .map_err(|e| GitkaError::Config(format!("Failed to parse release info: {}", e)))?;
+
+    let latest_version = release["tag_name"]
+        .as_str()
+        .unwrap_or("unknown")
+        .trim_start_matches('v');
+
+    let release_url = release["html_url"]
+        .as_str()
+        .unwrap_or("https://github.com/SabeeirSharrma/gitka/releases");
+
+    let release_notes = release["body"]
+        .as_str()
+        .unwrap_or("")
+        .to_string();
+
+    if latest_version == current_version {
+        println!("✓ Already up to date (v{})", current_version);
+        if json {
+            println!("{}", serde_json::to_string(&serde_json::json!({
+                "update_available": false,
+                "current_version": current_version,
+                "latest_version": latest_version
+            })).unwrap());
+        }
+        return Ok(());
+    }
+
+    println!("┌─────────────────────────────────────────────┐");
+    println!("│  Update available: {} → {}              │", current_version, latest_version);
+    println!("├─────────────────────────────────────────────┤");
+
+    // Truncate release notes to fit the box
+    let notes_preview: String = release_notes
+        .lines()
+        .filter(|l| !l.starts_with('#'))
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(60)
+        .collect();
+
+    if !notes_preview.trim().is_empty() {
+        println!("│  {}{}", notes_preview, if notes_preview.len() >= 60 { "..." } else { "" });
+    }
+    println!("│");
+    println!("│  Release: {}", release_url);
+    println!("└─────────────────────────────────────────────┘");
+
+    if json {
+        println!("{}", serde_json::to_string(&serde_json::json!({
+            "update_available": true,
+            "current_version": current_version,
+            "latest_version": latest_version,
+            "release_url": release_url,
+            "release_notes": release_notes
+        })).unwrap());
+    }
+
+    if check_only {
+        println!("\n--check mode: not installing.");
+        return Ok(());
+    }
+
+    // Confirm installation
+    if !json {
+        print!("\nUpdate to v{}? [Y/n] ", latest_version);
+        use std::io::Write;
+        std::io::stdout().flush().ok();
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input).ok();
+        let input = input.trim().to_lowercase();
+        if !input.is_empty() && input != "y" && input != "yes" {
+            println!("Update cancelled.");
+            return Ok(());
+        }
+    }
+
+    println!("\nRebuilding CLI from source...");
+
+    // Find the gitka repo source directory
+    let repo_url = "https://github.com/SabeeirSharrma/gitka.git";
+    let build_dir = std::env::temp_dir().join(format!("gitka-update-{}", &current_version));
+
+    // Clone fresh copy
+    println!("  Cloning repository...");
+    let clone_status = std::process::Command::new("git")
+        .args(["clone", "--depth", "1", repo_url, &build_dir.to_string_lossy()])
+        .status()
+        .map_err(|e| GitkaError::Config(format!("Failed to run git: {}", e)))?;
+
+    if !clone_status.success() {
+        return Err(GitkaError::Config("Failed to clone repository".to_string()));
+    }
+
+    // Build CLI
+    println!("  Building CLI...");
+    let cli_build = std::process::Command::new("cargo")
+        .args(["build", "--release", "--bin", "gitka"])
+        .current_dir(&build_dir)
+        .status()
+        .map_err(|e| GitkaError::Config(format!("Failed to run cargo: {}", e)))?;
+
+    if !cli_build.success() {
+        std::fs::remove_dir_all(&build_dir).ok();
+        return Err(GitkaError::Config("CLI build failed".to_string()));
+    }
+
+    // Install CLI
+    let current_exe = std::env::current_exe()
+        .map_err(|e| GitkaError::Config(format!("Cannot find current binary: {}", e)))?;
+    let install_dir = current_exe.parent()
+        .ok_or_else(|| GitkaError::Config("Cannot determine install directory".to_string()))?;
+
+    let cli_binary = if cfg!(target_os = "windows") {
+        build_dir.join("target/release/gitka.exe")
+    } else {
+        build_dir.join("target/release/gitka")
+    };
+
+    std::fs::copy(&cli_binary, install_dir.join(cli_binary.file_name().unwrap()))
+        .map_err(|e| GitkaError::Config(format!("Failed to install CLI binary: {}", e)))?;
+
+    println!("  ✓ CLI updated");
+
+    // Build and install GUI if not skipped
+    if !no_gui {
+        println!("\nBuilding GUI...");
+
+        // Check if src-tauri exists (it might be in the repo)
+        let tauri_dir = build_dir.join("src-tauri");
+        if tauri_dir.exists() {
+            // Try to install cargo-tauri if not present
+            let tauri_check = std::process::Command::new("cargo")
+                .args(["tauri", "--version"])
+                .current_dir(&build_dir)
+                .status();
+
+            if tauri_check.is_err() || !tauri_check.unwrap().success() {
+                println!("  Installing cargo-tauri...");
+                let install_tauri = std::process::Command::new("cargo")
+                    .args(["install", "tauri-cli", "--locked"])
+                    .status()
+                    .map_err(|e| GitkaError::Config(format!("Failed to install tauri-cli: {}", e)))?;
+
+                if !install_tauri.success() {
+                    println!("  ⚠ Could not install tauri-cli. GUI not updated.");
+                    println!("  Install manually: cargo install tauri-cli --locked");
+                } else {
+                    build_and_install_gui(&build_dir, install_dir)?;
+                }
+            } else {
+                build_and_install_gui(&build_dir, install_dir)?;
+            }
+        } else {
+            println!("  ⚠ src-tauri not found in repository. GUI not updated.");
+        }
+    }
+
+    // Clean up
+    std::fs::remove_dir_all(&build_dir).ok();
+
+    println!("\n✓ Update complete! (v{} → v{})", current_version, latest_version);
+    println!("  Restart any running gitka instances to use the new version.");
+
+    Ok(())
+}
+
+/// Build and install the Tauri GUI binary
+fn build_and_install_gui(build_dir: &Path, install_dir: &Path) -> Result<()> {
+    let gui_build = std::process::Command::new("cargo")
+        .args(["tauri", "build", "--release"])
+        .current_dir(build_dir.join("src-tauri"))
+        .status()
+        .map_err(|e| GitkaError::Config(format!("Failed to run tauri build: {}", e)))?;
+
+    if !gui_build.success() {
+        println!("  ⚠ GUI build failed. CLI was updated successfully.");
+        return Ok(());
+    }
+
+    // Find the built binary (location varies by platform)
+    let gui_binary = if cfg!(target_os = "macos") {
+        build_dir.join("src-tauri/target/release/bundle/macos/Gitka.app/Contents/MacOS/gitka-gui")
+    } else if cfg!(target_os = "windows") {
+        build_dir.join("src-tauri/target/release/gitka-gui.exe")
+    } else {
+        build_dir.join("src-tauri/target/release/gitka-gui")
+    };
+
+    if gui_binary.exists() {
+        let dest_name = if cfg!(target_os = "windows") { "gitka-gui.exe" } else { "gitka-gui" };
+        std::fs::copy(&gui_binary, install_dir.join(dest_name))
+            .map_err(|e| GitkaError::Config(format!("Failed to install GUI binary: {}", e)))?;
+        println!("  ✓ GUI updated");
+    } else {
+        println!("  ⚠ GUI binary not found at expected location");
     }
 
     Ok(())
