@@ -15,3 +15,8 @@ gitflare-server/
 /node_modules/
 /.astro/
 /dist/
+
+# opencode and codex for bug detection
+**/.codex/
+**/.opencode/
+**/.opencode/*
