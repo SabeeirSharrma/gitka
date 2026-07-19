@@ -16,8 +16,11 @@ const HEADER_SIZE: usize = 12;
 pub struct BudgetCheck {
     /// Free space on target drive in bytes
     pub free_space: u64,
-    /// Total size of repos to compress in bytes
+    /// Total decompressed size of repos in bytes
     pub needed_space: u64,
+    /// Estimated overhead ratio for recovery records (0.0–1.0)
+    /// e.g., 0.25 means recovery records add ~25% to the compressed footprint.
+    pub recovery_overhead_ratio: f64,
 }
 
 impl BudgetCheck {
@@ -25,17 +28,46 @@ impl BudgetCheck {
         Self {
             free_space,
             needed_space,
+            recovery_overhead_ratio: 0.0,
         }
+    }
+
+    /// Create a new budget check with recovery overhead accounted for.
+    /// `recovery_overhead_ratio` is the fractional overhead from recovery
+    /// records (e.g., 0.25 for 25% par2 redundancy). It inflates the
+    /// effective needed space so budget warnings are accurate.
+    pub fn new_with_recovery(free_space: u64, needed_space: u64, recovery_enabled: bool) -> Self {
+        // Typical par2 recovery uses ~25% redundancy by default
+        let ratio = if recovery_enabled { 0.25 } else { 0.0 };
+        Self {
+            free_space,
+            needed_space,
+            recovery_overhead_ratio: ratio,
+        }
+    }
+
+    /// Effective needed space after accounting for recovery overhead.
+    pub fn adjusted_needed_space(&self) -> u64 {
+        if self.recovery_overhead_ratio <= 0.0 {
+            return self.needed_space;
+        }
+        // Recovery overhead applies to the compressed archive size.
+        // Since we only know decompressed size, estimate compressed ≈ needed / compression_ratio.
+        // Use the most conservative estimate (lowest ratio = largest compressed).
+        let estimated_compressed = (self.needed_space as f64 / self.compression_ratio(&CompressionTier::Low)) as u64;
+        let recovery_bytes = (estimated_compressed as f64 * self.recovery_overhead_ratio) as u64;
+        self.needed_space.saturating_add(recovery_bytes)
     }
 
     /// Determine the appropriate compression tier based on budget
     pub fn determine_tier(&self, config: &CompressionConfig) -> CompressionTier {
         match &config.tier {
             CompressionTier::Auto => {
-                if self.needed_space == 0 {
+                let adjusted = self.adjusted_needed_space();
+                if adjusted == 0 {
                     return CompressionTier::Low;
                 }
-                let ratio = self.free_space as f64 / self.needed_space as f64;
+                let ratio = self.free_space as f64 / adjusted as f64;
                 if ratio >= 3.0 {
                     CompressionTier::Low
                 } else if ratio >= 1.0 {
@@ -50,11 +82,12 @@ impl BudgetCheck {
 
     /// Check if the budget is exceeded even at max compression
     pub fn is_over_budget(&self) -> bool {
-        if self.needed_space == 0 {
+        let adjusted = self.adjusted_needed_space();
+        if adjusted == 0 {
             return false;
         }
 
-        self.free_space < self.needed_space
+        self.free_space < adjusted
     }
 
     /// Get the estimated compression ratio for a tier

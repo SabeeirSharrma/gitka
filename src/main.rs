@@ -1100,7 +1100,11 @@ fn cmd_scan(config: &Config) -> Result<()> {
     let total_decompressed = repo_manager.total_decompressed_size()?;
     let free_space = drives.first().map(|d| d.free_space).unwrap_or(0);
 
-    let budget = compress::BudgetCheck::new(free_space, total_decompressed);
+    let budget = compress::BudgetCheck::new_with_recovery(
+        free_space,
+        total_decompressed,
+        config.toggles.recovery_records,
+    );
     let tier = budget.determine_tier(&config.compression);
 
     println!("\nBudget:");
@@ -1108,6 +1112,9 @@ fn cmd_scan(config: &Config) -> Result<()> {
     println!("  Decompressed size: {:.1} MB", total_decompressed as f64 / 1_048_576.0);
     println!("  Free space: {:.1} MB", free_space as f64 / 1_048_576.0);
     println!("  Recommended tier: {:?}", tier);
+    if config.toggles.recovery_records {
+        println!("  Recovery overhead: included (estimated ~25%)");
+    }
 
     if budget.is_over_budget() {
         println!("\n⚠ Warning: Repos may not fit even at maximum compression!");
@@ -1602,14 +1609,33 @@ fn cmd_unlock(config: &Config, repo_name: &str) -> Result<()> {
         }
     }
 
-    // Budget check
-    let free_space = usb::get_drive_info(&config.target.path)?.free_space;
+    // Budget check — checks the right target based on extraction config
+    let extraction_target_path = meta.extraction_target(config);
+    let (free_space, budget_label) = match config.extraction.target {
+        crate::config::ExtractionTarget::Usb => {
+            (usb::get_drive_info(&config.target.path)?.free_space, "USB".to_string())
+        }
+        crate::config::ExtractionTarget::Host => {
+            // Check host computer's temp directory free space
+            let host_free = usb::host_free_space(&extraction_target_path)?;
+            (host_free, "host".to_string())
+        }
+    };
     let decompressed_size = meta.decompressed_size.unwrap_or(0);
-    let budget = compress::BudgetCheck::new(free_space, decompressed_size);
+    let budget = compress::BudgetCheck::new_with_recovery(
+        free_space,
+        decompressed_size,
+        config.toggles.recovery_records,
+    );
 
     if budget.is_over_budget() {
-        println!("⚠ Warning: This repo may not fit for extraction!");
-        println!("  Consider using extraction target 'host' instead.");
+        println!("⚠ Warning: This repo may not fit for extraction on {}!", budget_label);
+        println!("  Free: {:.1} MB, needed (decompressed + recovery): {:.1} MB",
+            free_space as f64 / 1_048_576.0,
+            budget.adjusted_needed_space() as f64 / 1_048_576.0);
+        if matches!(config.extraction.target, crate::config::ExtractionTarget::Usb) {
+            println!("  Consider setting extraction.target = \"host\" to use host disk instead.");
+        }
     }
 
     // Extract the repo

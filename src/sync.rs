@@ -3,6 +3,7 @@
 use crate::config::Config;
 use crate::error::{GitkaError, Result};
 use crate::repo::{RepoMeta, RepoState};
+use std::borrow::Cow;
 
 /// Sync status for a repository
 #[derive(Debug, Clone)]
@@ -22,6 +23,25 @@ pub enum SyncStatus {
     Conflict(String),
 }
 
+/// Detect the default branch name from origin/HEAD or fall back to "main".
+fn default_branch(repo: &git2::Repository) -> Cow<'static, str> {
+    // Try origin/HEAD symbolic ref first
+    if let Ok(remote_head) = repo.find_reference("refs/remotes/origin/HEAD") {
+        if let Some(target) = remote_head.symbolic_target() {
+            if let Some(branch) = target.strip_prefix("refs/remotes/origin/") {
+                return Cow::Owned(branch.to_string());
+            }
+        }
+    }
+    // Fall back to checking common branch names
+    for candidate in &["main", "master", "trunk"] {
+        if repo.find_reference(&format!("refs/remotes/origin/{}", candidate)).is_ok() {
+            return Cow::Owned(candidate.to_string());
+        }
+    }
+    Cow::Borrowed("main")
+}
+
 /// Sync a repository (fetch/compare/push/pull/merge loop)
 pub fn sync_repo(config: &Config, repo_name: &str) -> Result<SyncStatus> {
     let repo_manager = crate::repo::RepoManager::new(config.clone());
@@ -39,6 +59,8 @@ pub fn sync_repo(config: &Config, repo_name: &str) -> Result<SyncStatus> {
     let repo = git2::Repository::open(&extraction_path)
         .map_err(|e| GitkaError::Git(e))?;
 
+    let branch = default_branch(&repo);
+
     // Fetch from origin
     let mut remote = repo.find_remote("origin")
         .map_err(|e| GitkaError::Git(e))?;
@@ -50,7 +72,9 @@ pub fn sync_repo(config: &Config, repo_name: &str) -> Result<SyncStatus> {
     let local_head = repo.head()
         .map_err(|e| GitkaError::Git(e))?;
 
-    let remote_branch = repo.find_branch("origin/HEAD", git2::BranchType::Remote)
+    let remote_ref = format!("refs/remotes/origin/{}", branch);
+    let remote_branch = repo.find_branch(&remote_ref, git2::BranchType::Remote)
+        .or_else(|_| repo.find_branch("origin/HEAD", git2::BranchType::Remote))
         .map_err(|e| GitkaError::Git(e))?;
     let remote_head = remote_branch.get();
 
@@ -71,18 +95,23 @@ pub fn sync_repo(config: &Config, repo_name: &str) -> Result<SyncStatus> {
 
     if ahead > 0 && behind > 0 {
         // Diverged - try auto-merge
-        return attempt_merge(&repo, repo_name, local_oid, remote_oid);
+        return attempt_merge(&repo, repo_name, local_oid, remote_oid, &branch);
     } else if ahead > 0 {
         // Local ahead - push
-        remote.push(&["refs/heads/main:refs/heads/main"], None)
+        let push_spec = format!("refs/heads/{}:refs/heads/{}", branch, branch);
+        remote.push(&[&push_spec], None)
             .map_err(|e| GitkaError::Git(e))?;
         return Ok(SyncStatus::Ahead(ahead as u32));
     } else if behind > 0 {
         // Remote ahead - pull (fast-forward)
-        let mut branch = repo.find_branch("main", git2::BranchType::Local)
+        let local_branch_name = format!("refs/heads/{}", branch);
+        let upstream_name = format!("origin/{}", branch);
+        let mut local_branch = repo.find_branch(&local_branch_name, git2::BranchType::Local)
+            .or_else(|_| repo.find_branch(&branch, git2::BranchType::Local))
             .map_err(|e| GitkaError::Git(e))?;
-        branch.set_upstream(Some("origin/main"))
-            .map_err(|e| GitkaError::Git(e))?;
+
+        // Set upstream tracking
+        let _ = local_branch.set_upstream(Some(&upstream_name));
 
         // Checkout the remote commit to fast-forward
         let remote_commit = repo.find_commit(remote_oid)
@@ -91,7 +120,11 @@ pub fn sync_repo(config: &Config, repo_name: &str) -> Result<SyncStatus> {
             .map_err(|e| GitkaError::Git(e))?;
 
         // Update the branch reference
-        branch.get_mut().set_target(remote_oid, "fast-forward")
+        local_branch.get_mut().set_target(remote_oid, "fast-forward")
+            .map_err(|e| GitkaError::Git(e))?;
+
+        // Update HEAD to point to the branch
+        repo.set_head(&local_branch_name)
             .map_err(|e| GitkaError::Git(e))?;
 
         return Ok(SyncStatus::Behind(behind as u32));
@@ -101,32 +134,36 @@ pub fn sync_repo(config: &Config, repo_name: &str) -> Result<SyncStatus> {
     Ok(SyncStatus::InSync)
 }
 
-/// Attempt to merge diverged branches
+/// Attempt to merge diverged branches.
+/// When there are no conflicts, performs the merge automatically and
+/// creates a merge commit. When conflicts exist, returns Conflict status.
 fn attempt_merge(
     repo: &git2::Repository,
     repo_name: &str,
     local_oid: git2::Oid,
     remote_oid: git2::Oid,
+    branch: &str,
 ) -> Result<SyncStatus> {
-    // Get the merge base
-    let merge_base = repo.merge_base(local_oid, remote_oid)
+    // Get the merge base (required for merge, but we also handle the no-base case)
+    let _merge_base = repo.merge_base(local_oid, remote_oid)
         .map_err(|_| GitkaError::SyncConflict(format!("{}: no merge base found", repo_name)))?;
 
-    // Get the commits
+    // Get local and remote commits for merge
     let local_commit = repo.find_commit(local_oid)
         .map_err(|e| GitkaError::Git(e))?;
-    let _remote_commit = repo.find_commit(remote_oid)
-        .map_err(|e| GitkaError::Git(e))?;
-    let base_commit = repo.find_commit(merge_base)
+    let remote_commit = repo.find_commit(remote_oid)
         .map_err(|e| GitkaError::Git(e))?;
 
-    // Try to merge (takes 2 commits and an optional ancestor)
-    let index = repo.merge_commits(&base_commit, &local_commit, None)
-        .map_err(|e| GitkaError::Git(e))?;
+    // Try to merge the remote into local using merge_commits (takes &Commit)
+    let mut merge_index = repo.merge_commits(
+        &remote_commit,
+        &local_commit,
+        None,
+    ).map_err(|e| GitkaError::Git(e))?;
 
     // Check for conflicts
-    if index.has_conflicts() {
-        let conflicts: Vec<String> = index.conflicts()
+    if merge_index.has_conflicts() {
+        let conflicts: Vec<String> = merge_index.conflicts()
             .map_err(|e| GitkaError::Git(e))?
             .filter_map(|c| c.ok())
             .map(|c| {
@@ -144,10 +181,49 @@ fn attempt_merge(
         )));
     }
 
-    // If no conflicts, we could auto-merge
-    // For now, flag as needing manual resolution
+    // No conflicts — perform the merge automatically
+    // 1. Write the merged tree from the index
+    let tree_oid = merge_index.write_tree_to(repo)
+        .map_err(|e| GitkaError::Git(e))?;
+    let tree = repo.find_tree(tree_oid)
+        .map_err(|e| GitkaError::Git(e))?;
+
+    // 2. Get author/committer signature from config or use a fallback
+    let signature = repo.signature()
+        .unwrap_or_else(|_| {
+            git2::Signature::now("Gitka Sync", "gitka@local")
+                .expect("Failed to create fallback signature")
+        });
+
+    // 3. Determine the local branch reference name
+    let local_ref = format!("refs/heads/{}", branch);
+
+    // 4. Create the merge commit with two parents (local + remote)
+    let parents = [&local_commit, &remote_commit];
+    let merge_commit_oid = repo.commit(
+        Some(&local_ref),
+        &signature,
+        &signature,
+        &format!("Auto-merge branch '{}' of origin/{}", branch, branch),
+        &tree,
+        &parents,
+    ).map_err(|e| GitkaError::Git(e))?;
+
+    // 5. Checkout the merge commit
+    let merge_commit = repo.find_commit(merge_commit_oid)
+        .map_err(|e| GitkaError::Git(e))?;
+    repo.checkout_tree(merge_commit.as_object(), None)
+        .map_err(|e| GitkaError::Git(e))?;
+    repo.set_head(&local_ref)
+        .map_err(|e| GitkaError::Git(e))?;
+
     let (ahead, behind) = repo.graph_ahead_behind(local_oid, remote_oid)
         .map_err(|e| GitkaError::Git(e))?;
+
+    tracing::info!(
+        "Auto-merged {} (was {} ahead, {} behind)",
+        repo_name, ahead, behind
+    );
 
     Ok(SyncStatus::Diverged {
         ahead: ahead as u32,
@@ -199,21 +275,30 @@ pub fn check_sync_status(config: &Config, repo_name: &str) -> Result<SyncStatus>
     let repo = git2::Repository::open(&extraction_path)
         .map_err(|e| GitkaError::Git(e))?;
 
+    let branch = default_branch(&repo);
+
     // Get local and remote HEADs
     let local_head = repo.head()
         .map_err(|e| GitkaError::Git(e))?;
 
-    let remote_branch = match repo.find_branch("origin/HEAD", git2::BranchType::Remote) {
+    let remote_ref = format!("refs/remotes/origin/{}", branch);
+    let remote_branch = match repo.find_branch(&remote_ref, git2::BranchType::Remote) {
         Ok(branch) => branch,
         Err(_) => {
-            // If origin/HEAD doesn't exist, try to find any remote branch
-            let mut remote = repo.find_remote("origin")
-                .map_err(|e| GitkaError::Git(e))?;
-            remote.fetch(&[] as &[&str], None, None)
-                .map_err(|e| GitkaError::Git(e))?;
+            // If the specific branch doesn't exist, try origin/HEAD
+            match repo.find_branch("origin/HEAD", git2::BranchType::Remote) {
+                Ok(b) => b,
+                Err(_) => {
+                    // Fetch and try again
+                    let mut remote = repo.find_remote("origin")
+                        .map_err(|e| GitkaError::Git(e))?;
+                    remote.fetch(&[] as &[&str], None, None)
+                        .map_err(|e| GitkaError::Git(e))?;
 
-            repo.find_branch("origin/main", git2::BranchType::Remote)
-                .map_err(|e| GitkaError::Git(e))?
+                    repo.find_branch(&remote_ref, git2::BranchType::Remote)
+                        .map_err(|e| GitkaError::Git(e))?
+                }
+            }
         }
     };
 

@@ -1,0 +1,127 @@
+# Gitka Configuration Schema
+# Companion to gitka.toml — documents every config field, its default, and purpose.
+#
+# The actual config file lives at <target>/.gitka/gitka.toml.
+# Edit with: gitka config --set key=value
+# Query with: gitka config --get key
+
+# ── Source ───────────────────────────────────────────────────────────
+# Where to discover and clone repositories from.
+[source]
+## GitHub username or organization (e.g., "myuser" or "my-org").
+## Used to discover repos via the GitHub API.
+# github_username = "myuser"
+
+## GitFlare instance URL (alternative to GitHub).
+## If set, takes priority over github_username.
+# gitflare_url = "https://gitflare.example.com"
+
+## Authentication token (GitHub PAT or GitFlare token).
+## Required for private repo access. GitHub PAT needs `repo` scope.
+# auth_token = "ghp_xxxxxxxxxxxxxxxxxxxx"
+
+# ── Target ───────────────────────────────────────────────────────────
+# The physical media (USB, external drive) that stores the backup.
+[target]
+## Absolute path to the backup drive root.
+## e.g., "/mnt/usb", "/Volumes/GITKA", "D:\\"
+# path = "/mnt/usb"
+
+## Detection mode:
+##   "removable" — filters to USB/external only (safe default)
+##   "local"     — allows non-removable drives (explicit opt-in)
+# mode = "removable"
+
+# ── Per-Repo Settings ────────────────────────────────────────────────
+# Each repo tracked by Gitka gets an entry here.
+# Managed automatically by gitka sync / gitka import.
+# [[repos]]
+## Repository name (matches the GitHub/GitFlare repo name)
+# name = "my-project"
+
+## Whether this repo can be extracted for offline work.
+## Archive-only repos never leave compressed form.
+# workspace_eligible = true
+
+## Whether to clone full git history or shallow (latest commit only).
+## Shallow saves space and time for repos with long histories.
+# full_history = false
+
+## Last synced commit hash (managed by gitka sync).
+# last_synced = "abc123..."
+
+# ── Compression ──────────────────────────────────────────────────────
+[compression]
+## Backend: "zstd" (default, stable). Reserved for future "sai".
+# backend = "zstd"
+
+## Tier: "auto" (recommended), "low", "medium", "high".
+##   auto   — selects based on free space vs. repo size ratio
+##   low    — zstd -6, fast, ~2x ratio
+##   medium — zstd -15, balanced, ~3x ratio
+##   high   — zstd --ultra -22, max ratio
+# tier = "auto"
+
+## Dictionary size for zstd training (MB).
+## Larger = better compression for small files, more memory at decompress.
+# dictionary_size_mb = 32
+
+## Volume splitting: splits archives into fixed-size parts.
+## Useful for FAT32 (limit 4 GB) or burning to CD/DVD (700 MB).
+## Set size in MB, or omit/null to disable.
+# volume_splitting = { size_mb = 4096 }
+
+## Solid archiving mode:
+##   "none"         — per-file compression (individual zstd frames)
+##   "per_repo"     — each repo gets its own archive (default)
+##   "full_archive" — all repos in a single archive stream
+# solid = "per_repo"
+
+## Cross-repo deduplication.
+## When true, identical files across repos are stored once (SHA-256 addressed).
+# dedup = true
+
+# ── Extraction ────────────────────────────────────────────────────────
+# Where to temporarily place repos when they're unlocked or served.
+[extraction]
+## Extraction target:
+##   "usb"  — extract onto the USB drive itself (default)
+##   "host" — extract to a temp dir on the host computer
+# target = "usb"
+
+# ── Toggles ──────────────────────────────────────────────────────────
+[toggles]
+## Clear extraction directory after lock/serve-stop.
+# clear_after_lock = true
+
+## Verify archive integrity + permissions after sync/recompress.
+# verify_after_sync = true
+
+## AES-256-GCM per-volume encryption.
+## When enabled, each archive volume part is encrypted independently
+## with its own nonce. Salt is generated and persisted to config.
+## Requires a password (set via GITKA_PASSWORD env var or config).
+# encryption = false
+
+## par2-style per-volume recovery records.
+## Stored decompressed in recovery-data/ directory.
+# recovery_records = false
+
+# ── Encryption (auto-managed) ────────────────────────────────────────
+# Automatically populated when encryption is toggled on.
+# [encryption]
+## Password (optional — falls back to GITKA_PASSWORD env var).
+# password = ""
+
+## Hex-encoded salt for key derivation (auto-generated, 16 bytes).
+## Persisted so encrypted archives are recoverable across sessions.
+# salt = "abcdef0123456789..."
+
+# ── Integrations ─────────────────────────────────────────────────────
+[integrations]
+## GitFlare LAN serving configuration.
+# [integrations.gitflare]
+## Port for the GitFlare HTTP server.
+# port = 8080
+## Bind address for LAN access.
+# bind_address = "0.0.0.0"

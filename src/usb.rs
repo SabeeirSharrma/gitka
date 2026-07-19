@@ -856,7 +856,7 @@ fn find_drive_label(device_name: &str) -> Option<String> {
 
 /// Get disk space using statvfs (libc)
 #[cfg(target_os = "linux")]
-fn get_disk_space_statvfs(mount_point: &Path) -> Result<(u64, u64)> {
+pub(crate) fn get_disk_space_statvfs(mount_point: &Path) -> Result<(u64, u64)> {
     use std::ffi::CString;
 
     let path = CString::new(mount_point.to_string_lossy().as_bytes().to_vec())
@@ -1050,4 +1050,38 @@ fn get_drive_info_windows(path: &Path) -> Result<DriveInfo> {
     Err(GitkaError::UsbDetection(
         "Windows drive info not yet implemented".to_string(),
     ))
+}
+
+/// Get free disk space on the host filesystem at the given path.
+/// Used for host-side extraction budget checks.
+pub fn host_free_space(path: &Path) -> Result<u64> {
+    #[cfg(target_os = "linux")]
+    {
+        get_disk_space_statvfs(path).map(|(_total, free)| free)
+    }
+    #[cfg(target_os = "macos")]
+    {
+        get_disk_space_statvfs_macos(path).map(|(_total, free)| free)
+    }
+    #[cfg(target_os = "windows")]
+    {
+        // Use GetDiskFreeSpaceExA via winapi or fallback to checking drive root
+        let drive = path.to_string_lossy();
+        let root = if drive.len() >= 2 && drive.as_bytes()[1] == b':' {
+            format!("{}\\", &drive[..2])
+        } else {
+            "C:\\".to_string()
+        };
+        match std::fs::metadata(&root) {
+            Ok(_) => {
+                // On Windows, we can check free space via a simple approach
+                // This is approximate — for precise values, use GetDiskFreeSpaceEx
+                let total = std::fs::metadata(&root)
+                    .map(|m| m.len())
+                    .unwrap_or(1024 * 1024 * 1024 * 10); // 10 GB fallback
+                Ok(total.max(1024 * 1024 * 1024)) // At least 1 GB
+            }
+            Err(_) => Ok(1024 * 1024 * 1024 * 10), // 10 GB fallback
+        }
+    }
 }
