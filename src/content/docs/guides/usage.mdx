@@ -39,6 +39,24 @@ gitka wipe --target /dev/sdb1 --source github --username myuser
 - Auto-selects filesystem: vfat for under 4GB, ext4 for larger drives
 - Use `--filesystem` to override (ext4, vfat, ntfs)
 
+## Sync Algorithm
+
+`gitka sync` performs smart synchronization:
+
+1. **Auto-detects default branch** — reads `origin/HEAD` or falls back to `main`/`master`/`trunk`
+2. **Fetches all repos** with incremental transfers
+3. **Auto-merges** diverged branches when no conflicts are detected, creating proper merge commits
+4. **Host-side budget check** — when extraction target is `host`, checks free space on the host machine
+5. **Recovery overhead estimation** — accounts for ~25% par2 overhead in budget calculations
+
+```bash
+# Sync all repos
+gitka sync
+
+# Sync with JSON output for scripting
+gitka sync --json
+```
+
 ## Working Offline
 
 1. **Extract to work offline**
@@ -53,13 +71,15 @@ gitka wipe --target /dev/sdb1 --source github --username myuser
    ```bash
    gitka lock <repo>
    ```
-   This closes the session and re-archives the repo.
+   This closes the session and re-archives the repo. The audit trail shows commits made, files touched, and session duration.
 
-## Session Tracking & Incremental Sync
+## Session Tracking & Audit Trail
 
-Gitka tracks which repos were extracted and what changed during each session. This powers:
+Gitka tracks which repos were extracted and what changed during each session:
+
 - **Incremental sync**: `gitka sync` skips repos that haven't been touched since last sync.
 - **Crash recovery**: If a session wasn't closed cleanly, `gitka sync` detects the orphaned extraction and recompresses it automatically.
+- **Audit trail**: When locking a repo, you see a summary of commits made, files modified, and session duration.
 
 ```bash
 $ gitka status
@@ -74,6 +94,16 @@ other-repo                     ExtractedLocal  never           12.1 MB          
   other-repo — unlocked (30m, 2 commits, 5 files touched)
 ```
 
+## JSON Output
+
+All commands support `--json` for scripting and CI integration:
+
+```bash
+gitka sync --json
+gitka status --json
+gitka scan --json
+```
+
 ## Repo States
 
 | State | Description |
@@ -81,3 +111,13 @@ other-repo                     ExtractedLocal  never           12.1 MB          
 | **Archived** | Compressed, at rest — this is the default |
 | **Extracted (local)** | Temporarily decompressed for offline commits |
 | **Extracted (served)** | Decompressed and served over LAN via GitFlare |
+
+## GUI
+
+The `gitka-gui` Tauri app provides a visual interface for all operations. Run it alongside the CLI:
+
+```bash
+gitka-gui
+```
+
+The GUI supports all the same features: init, scan, sync, unlock/lock, serve, and status monitoring.

@@ -7,6 +7,12 @@ description: Gitka configuration options
 
 Gitka uses a TOML config file located at `<target>/.gitka/gitka.toml`.
 
+## Config Lookup Order
+
+Gitka looks for configuration in this order:
+1. `<target>/.gitka/gitka.toml` — primary per-target config
+2. `~/.config/gitka/gitka.toml` — user-level defaults
+
 ## Example Config
 
 ```toml
@@ -33,7 +39,37 @@ clear_after_lock = true
 verify_after_sync = true
 encryption = false
 recovery_records = false
+
+# Per-repo workspace eligibility (optional)
+[workspace_eligible]
+"my-project" = true
+"other-repo" = false
 ```
+
+## Key Configuration Fields
+
+### Source
+- `github_username` — your GitHub or GitFlare username
+- `auth_token` — personal access token for private repos (stored in config)
+
+### Compression
+- `tier` — zstd compression tier: `auto` (default), `low`, `medium`, `high`
+- `dedup` — enable cross-repo deduplication (default: false)
+- `dictionary_size_mb` — zstd dictionary training size in MB
+- `volume_splitting.size_mb` — split archives into this many MB per part
+
+### Extraction
+- `target` — where to extract repos: `usb` (default) or `host`
+  - When set to `host`, extracts to the host computer's temp directory instead of USB. This is faster but requires the host to have sufficient free space.
+
+### Toggles
+- `clear_after_lock` — clear extracted files after locking (default: true)
+- `verify_after_sync` — verify archive integrity after sync (default: true)
+- `encryption` — enable AES-256-GCM encryption (default: false)
+- `recovery_records` — enable par2 recovery records (default: false)
+
+### Encryption Salt
+- When encryption is enabled, Gitka generates a random salt and persists it to the config file. This salt is used for key derivation and must remain consistent across operations.
 
 ## CLI Configuration Management
 
@@ -45,4 +81,5 @@ gitka config --get source.github_username      # get a value
 gitka config --set source.github_username=me   # set a value
 gitka config --get compression.dedup           # check dedup status
 gitka config --get compression.volume_splitting.size_mb  # check split size
+gitka config --get extraction.target           # check extraction target
 ```

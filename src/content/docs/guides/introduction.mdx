@@ -14,15 +14,21 @@ Gitka keeps all your repos compressed on removable media. When you need to work 
 ### Key Features
 - **Aggressive compression** — auto-selects zstd tier based on available space
 - **Offline commits** — extract a repo, commit locally, sync later
+- **Smart sync** — auto-merges diverged branches with no conflicts, detects default branch automatically
 - **LAN sharing** — serve a repo to others on your network via GitFlare
 - **Recovery records** — optional par2 redundancy for corruption protection
 - **Crash resilience** — detects orphaned extractions and recompresses automatically
 - **Volume splitting** — split archives into fixed-size parts for CD/DVD or FAT32 limits
 - **Cross-repo dedup** — share common blobs across repos to save space
+- **AES-256-GCM encryption** — encrypt archives for secure transport
+- **Host-side extraction** — extract to host computer instead of USB for better performance
+- **Audit trail** — track commits, files touched, and session history per repo
+- **JSON output** — all commands support `--json` for scripting and CI integration
+- **Private repo support** — authenticate with personal access tokens for private repos
 
 ## Getting Started
-- Check out the [Installation Guide](installation.md)
-- Learn basic usage in the [Usage Guide](usage.md)
-- Explore [Advanced Features](features.md)
-- View the [Configuration](configuration.md) options
-- See the full [CLI Command Reference](cli-reference.md)
+- Check out the [Installation Guide](/gitka/guides/installation/)
+- Learn basic usage in the [Usage Guide](/gitka/guides/usage/)
+- Explore [Advanced Features](/gitka/reference/features/)
+- View the [Configuration](/gitka/reference/configuration/) options
+- See the full [CLI Command Reference](/gitka/reference/cli-reference/)

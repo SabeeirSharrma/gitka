@@ -1,13 +1,26 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Gitka installer — builds from source and installs to /usr/local/bin
+# Gitka installer — Linux & macOS
+# Builds from source, installs gitka to /usr/local/bin.
 # Usage: curl -sSf https://sabeeir.qd.je/gitka/install.sh | bash
+#        curl -sSf https://sabeeir.qd.je/gitka/install.sh | bash -s -- --prefix ~/.local
 
 REPO="https://github.com/SabeeirSharrma/gitka.git"
 INSTALL_DIR="/usr/local/bin"
 BUILD_DIR="${TMPDIR:-/tmp}/gitka-build-$$"
+SKIP_RUST_INSTALL="${SKIP_RUST_INSTALL:-}"
 
+# Parse --prefix
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --prefix) INSTALL_DIR="$2"; shift 2 ;;
+    --prefix=*) INSTALL_DIR="${1#*=}"; shift ;;
+    *) echo "Unknown option: $1"; exit 1 ;;
+  esac
+done
+
+# ── Colors ──────────────────────────────────────────────────────────
 info()  { printf "\033[1;34m▸\033[0m %s\n" "$*"; }
 ok()    { printf "\033[1;32m✓\033[0m %s\n" "$*"; }
 warn()  { printf "\033[1;33m⚠\033[0m %s\n" "$*"; }
@@ -16,23 +29,47 @@ err()   { printf "\033[1;31m✗\033[0m %s\n" "$*" >&2; exit 1; }
 cleanup() { rm -rf "$BUILD_DIR"; }
 trap cleanup EXIT
 
+# ── Detect OS ────────────────────────────────────────────────────────
+OS="$(uname -s)"
+
+case "$OS" in
+  Linux)
+    ;;
+  Darwin)
+    # macOS: ensure Xcode CLT and pkg-config are present
+    if ! command -v xcode-select >/dev/null 2>&1; then
+      warn "Xcode Command Line Tools not found."
+      xcode-select --install 2>/dev/null || true
+      echo ""
+      echo "  ⏳ Complete the installation dialog, then re-run this script."
+      echo ""
+      exit 1
+    fi
+    if ! command -v pkg-config >/dev/null 2>&1 && command -v brew >/dev/null 2>&1; then
+      brew install pkg-config 2>/dev/null || true
+    fi
+    ;;
+  *)
+    err "Unsupported OS: $OS. On Windows, use the PowerShell installer:"
+    err "  irm https://sabeeir.qd.je/gitka/install-windows.ps1 | iex"
+    ;;
+esac
+
 # ── Preflight checks ──────────────────────────────────────────────
 
-command -v git  >/dev/null 2>&1 || err "git is required but not installed."
-command -v cargo >/dev/null 2>&1 || {
-  warn "Rust/Cargo not found."
-  if command -v rustup >/dev/null 2>&1; then
-    info "Installing Rust toolchain via rustup..."
-    rustup default stable
-  else
-    info "Installing Rust via rustup..."
+command -v git >/dev/null 2>&1 || err "git is required but not installed."
+
+if ! command -v cargo >/dev/null 2>&1; then
+  if [ -z "$SKIP_RUST_INSTALL" ]; then
+    warn "Rust/Cargo not found. Installing via rustup..."
     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-    # Source cargo env for this session
     CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}"
     export PATH="$CARGO_HOME/bin:$PATH"
+  else
+    err "Rust/Cargo is required. Install it first: https://rustup.rs"
   fi
-  command -v cargo >/dev/null 2>&1 || err "Cargo still not available after install."
-}
+fi
+command -v cargo >/dev/null 2>&1 || err "Cargo still not available after install."
 ok "Dependencies OK"
 
 # ── Clone & build ─────────────────────────────────────────────────
@@ -50,6 +87,7 @@ BINARY="$BUILD_DIR/target/release/gitka"
 [ -f "$BINARY" ] || err "Build succeeded but binary not found at $BINARY"
 
 info "Installing to $INSTALL_DIR/gitka..."
+mkdir -p "$INSTALL_DIR" 2>/dev/null || true
 if [ -w "$INSTALL_DIR" ]; then
   cp "$BINARY" "$INSTALL_DIR/gitka"
 else
@@ -71,7 +109,8 @@ fi
 
 echo ""
 echo "  Quick start:"
-echo "    gitka wipe --target /dev/sdb1 --username <github-user>"
-echo "    gitka init --target /mnt/usb --username <github-user>"
+echo "    gitka init --target /mnt/usb --username <user> --token <pat>"
 echo "    gitka scan && gitka sync"
+echo "    gitka status"
+echo "    gitka --help"
 echo ""

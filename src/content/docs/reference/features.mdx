@@ -41,8 +41,83 @@ gitka config --set compression.dedup=true
 gitka config --set compression.dedup=false
 ```
 
-Dedup hashes each file's content with SHA-256 before compression. If the content already exists, only a reference is written.
+Dedup hashes each file's content with SHA-256 before compression. If the content already exists, only a reference is written. Dedup usage is tracked per-operation via `record_saved_bytes()`.
 
-## Encryption & Redundancy
+## Encryption
 
-Gitka also supports optional **AES-256-GCM encryption** for archives and **recovery records** (par2) for protection against disk corruption. Check configuration to enable these features.
+Gitka supports optional **AES-256-GCM encryption** for archives. When enabled:
+
+- A random salt is generated and persisted to the config file
+- Each archive is encrypted with a key derived from the salt
+- The salt must remain consistent — Gitka auto-manages it via `ensure_encryption_salt()`
+
+```bash
+# Enable encryption
+gitka config --set toggles.encryption=true
+
+# Disable encryption
+gitka config --set toggles.encryption=false
+```
+
+## Recovery Records
+
+Optional **par2 recovery records** provide corruption protection. When enabled:
+
+- Each archive gets ~25% overhead for redundancy records
+- `gitka repair <repo>` can recover from partial corruption
+- Budget checks account for the recovery overhead automatically
+
+```bash
+# Enable recovery records
+gitka config --set toggles.recovery_records=true
+
+# Repair a corrupted repo
+gitka repair <repo>
+```
+
+## Host-Side Extraction
+
+By default, Gitka extracts repos to the USB drive. With host-side extraction, repos are extracted to the host computer's temp directory instead — significantly faster for I/O-bound work.
+
+```bash
+# Enable host-side extraction
+gitka config --set extraction.target=host
+
+# Revert to USB extraction
+gitka config --set extraction.target=usb
+```
+
+When enabled, the budget check uses the host machine's free disk space instead of the USB drive's free space.
+
+## Smart Sync & Auto-Merge
+
+`gitka sync` performs intelligent synchronization:
+
+1. **Default branch detection** — reads `origin/HEAD` to determine the repo's default branch, falling back to `main`/`master`/`trunk`
+2. **Auto-merge** — when local and remote have diverged with no conflicts, Gitka creates a proper merge commit with two parents
+3. **Incremental sync** — only fetches repos that have changed since last sync
+4. **Recovery overhead estimation** — budget checks account for ~25% par2 overhead when recovery records are enabled
+
+```bash
+gitka sync           # auto-merges clean divergences
+gitka sync --json    # JSON output for scripting
+```
+
+## Audit Trail
+
+When you lock a repo after offline work, Gitka shows a detailed audit trail:
+
+- Number of commits made
+- Files touched/modified
+- Session duration
+- Archive size before and after
+
+## JSON Output
+
+All commands support `--json` for scripting and CI integration:
+
+```bash
+gitka sync --json
+gitka status --json
+gitka scan --json
+```

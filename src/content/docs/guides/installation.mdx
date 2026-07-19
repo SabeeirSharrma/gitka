@@ -5,19 +5,57 @@ description: Installation guide for Gitka
 
 # Installation
 
-Gitka is easy to install via our install script. It builds from source and places the binary in `/usr/local/bin`.
+Gitka builds from source using Rust. We provide install scripts for all platforms — they handle dependencies automatically.
 
-## Requirements
-- Rust toolchain (cargo) for building from source.
-- Supported OS: Linux, macOS, Windows.
+## Quick Install
 
-## Quick Install (Linux/macOS)
+### Linux / macOS
 
 ```bash
-curl -sSf https://raw.githubusercontent.com/SabeeirSharrma/gitka/refs/heads/main/install.sh | bash
+curl -sSf https://sabeeir.qd.je/gitka/install.sh | bash
 ```
 
-## Platform specific features
+### Windows (PowerShell)
+
+Run as Administrator or ensure your user profile is in PATH:
+
+```powershell
+[Net.ServicePointManager]::SecurityProtocol = 'tls12'
+iex "& { $(irm https://sabeeir.qd.je/gitka/install-windows.ps1) }"
+```
+
+Or download and run locally:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File install-windows.ps1
+```
+
+The Windows installer will automatically install:
+- **Git for Windows** (if not already installed)
+- **Rust/Cargo** via rustup (if not already installed)
+- **Visual Studio 2022 Build Tools** with C++ workload (if not already installed)
+
+### Custom Install Location
+
+**Linux/macOS** — use the `--prefix` flag:
+
+```bash
+curl -sSf https://sabeeir.qd.je/gitka/install.sh | bash -s -- --prefix ~/.local
+```
+
+**Windows** — pass the `-InstallDir` parameter:
+
+```powershell
+.\install-windows.ps1 -InstallDir "D:\Tools\Gitka"
+```
+
+## Requirements
+
+- **Rust toolchain** (cargo) — the installer handles this if missing
+- **Git** — needed for cloning repositories
+- **C compiler** — GCC/Clang on Linux/macOS, MSVC on Windows (installer handles MSVC)
+
+## Platform Support
 
 | Feature | Linux | macOS | Windows |
 |---|---|---|---|
@@ -27,3 +65,12 @@ curl -sSf https://raw.githubusercontent.com/SabeeirSharrma/gitka/refs/heads/main
 | Volume splitting | ✅ | ✅ | ✅ |
 | Cross-repo dedup | ✅ | ✅ | ✅ |
 | GitFlare serving | ✅ | ✅ | ✅ |
+| Host-side extraction | ✅ | ✅ | ✅ |
+| Encryption (AES-256-GCM) | ✅ | ✅ | ✅ |
+| Recovery records (par2) | ✅ | ✅ | ✅ |
+
+## Verify Installation
+
+```bash
+gitka --version
+```
