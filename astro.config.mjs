@@ -12,6 +12,15 @@ integrations: [
       title: 'Gitka',
       tagline: 'Offline commits, aggressive compression, and LAN sharing for your repos.',
       customCss: ['./src/styles/custom.css'],
+      head: [
+        {
+          tag: 'meta',
+          attrs: {
+            name: 'viewport',
+            content: 'width=device-width, initial-scale=1.0, viewport-fit=cover',
+          },
+        },
+      ],
       components: {
         Footer: './src/components/Footer.astro',
       },
