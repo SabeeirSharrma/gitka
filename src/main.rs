@@ -57,6 +57,14 @@ fn main() -> anyhow::Result<()> {
             )?;
             return Ok(());
         }
+        Some(Commands::Update { check, no_gui, json }) => {
+            cmd_update(*check, *no_gui, *json)?;
+            return Ok(());
+        }
+        Some(Commands::Uninstall) => {
+            cmd_uninstall()?;
+            return Ok(());
+        }
         _ => {}
     }
 
@@ -104,14 +112,6 @@ fn main() -> anyhow::Result<()> {
         Commands::TrainDict { source } => {
             let (config, _) = load_config(&cli)?;
             cmd_train_dict(&config, source.as_deref())?;
-            return Ok(());
-        }
-        Commands::Update { check, no_gui, json } => {
-            cmd_update(*check, *no_gui, *json)?;
-            return Ok(());
-        }
-        Commands::Uninstall => {
-            cmd_uninstall()?;
             return Ok(());
         }
         _ => unreachable!(),
