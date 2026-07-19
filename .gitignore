@@ -9,3 +9,7 @@ extract/
 .DS_Store
 gitka-spec.md
 gitflare-server/
+
+/node_modules/
+/.astro/
+/dist/
