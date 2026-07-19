@@ -46,7 +46,7 @@ fn main() -> anyhow::Result<()> {
             cmd_init(source, target, username.as_deref(), token.as_deref(), gitflare_url.as_deref(), *volume_size, *dedup, *interactive)?;
             return Ok(());
         }
-        Some(Commands::Auth { username, token, verify, status, json }) => {
+        Some(Commands::Auth { source: _, username, token, verify, status, json }) => {
             cmd_auth(
                 cli.config.clone(),
                 username.as_deref(),

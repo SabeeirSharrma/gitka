@@ -76,6 +76,10 @@ pub enum Commands {
 
     /// Authenticate a GitHub account and store the token in config
     Auth {
+        /// Source type (github or gitflare)
+        #[arg(default_value = "github")]
+        source: String,
+
         /// GitHub username or organization
         #[arg(long)]
         username: Option<String>,
