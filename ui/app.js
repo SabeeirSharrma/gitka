@@ -24,7 +24,7 @@ let githubAuth = {
 
 // ── Init ────────────────────────────────────────────────────────
 
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
   initNavigation();
   initDashboardActions();
   initRepoActions();
@@ -33,8 +33,23 @@ document.addEventListener('DOMContentLoaded', () => {
   initToolsActions();
   initSettingsActions();
   initModal();
+  await autoDetectConfig();
   loadStatus();
 });
+
+// ── Init ────────────────────────────────────────────────────────
+
+async function autoDetectConfig() {
+  try {
+    const found = await invoke('find_config');
+    if (found) {
+      configPath = found;
+      document.getElementById('status-config').textContent = configPath;
+    }
+  } catch (e) {
+    // Config not found, will be set via Setup
+  }
+}
 
 // ── Navigation ──────────────────────────────────────────────────
 

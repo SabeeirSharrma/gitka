@@ -2173,6 +2173,7 @@ fn cmd_config(config: &mut Config, set: Option<String>, get: Option<String>, con
             "compression.tier" => println!("{:?}", config.compression.tier),
             "compression.dictionary_size_mb" => println!("{}", config.compression.dictionary_size_mb),
             "compression.dedup" => println!("{}", config.compression.dedup),
+            "compression.solid" => println!("{:?}", config.compression.solid),
             "compression.volume_splitting.size_mb" => {
                 match &config.compression.volume_splitting {
                     Some(vs) => println!("{}", vs.size_mb),
@@ -2202,6 +2203,7 @@ fn cmd_config(config: &mut Config, set: Option<String>, get: Option<String>, con
                 println!("  compression.tier         (auto | low | medium | high)");
                 println!("  compression.dictionary_size_mb");
                 println!("  compression.dedup        (true | false)");
+                println!("  compression.solid        (per_repo | none | full_archive)");
                 println!("  compression.volume_splitting.size_mb (number | off)");
                 println!("  extraction.target        (usb | host)");
                 println!("  toggles.clear_after_lock (true | false)");
@@ -2260,6 +2262,14 @@ fn cmd_config(config: &mut Config, set: Option<String>, get: Option<String>, con
                     "true" => config.compression.dedup = true,
                     "false" => config.compression.dedup = false,
                     _ => { println!("Invalid value. Use: true | false"); return Ok(()); }
+                }
+            }
+            "compression.solid" => {
+                match value {
+                    "per_repo" => config.compression.solid = config::SolidMode::PerRepo,
+                    "none" => config.compression.solid = config::SolidMode::None,
+                    "full_archive" => config.compression.solid = config::SolidMode::FullArchive,
+                    _ => { println!("Invalid value. Use: per_repo | none | full_archive"); return Ok(()); }
                 }
             }
             "compression.volume_splitting.size_mb" => {

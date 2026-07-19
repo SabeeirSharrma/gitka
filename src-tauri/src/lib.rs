@@ -451,6 +451,42 @@ fn detect_repos_on_drive(path: String) -> Result<Vec<String>, String> {
     Ok(repos)
 }
 
+#[tauri::command]
+fn find_config() -> Result<Option<String>, String> {
+    // Search common locations for gitka.toml
+    let candidates = vec![
+        dirs::home_dir().map(|h| h.join(".gitka").join("gitka.toml")),
+        std::env::current_dir().ok().map(|d| d.join(".gitka").join("gitka.toml")),
+        dirs::home_dir().map(|h| h.join("gitka.toml")),
+    ];
+
+    for candidate in candidates.into_iter().flatten() {
+        if candidate.exists() {
+            return Ok(Some(candidate.to_string_lossy().to_string()));
+        }
+    }
+
+    // Also search mounted drives under /run/media and /mnt
+    if let Ok(entries) = std::fs::read_dir("/run/media") {
+        for entry in entries.flatten() {
+            let gitka_toml = entry.path().join(".gitka").join("gitka.toml");
+            if gitka_toml.exists() {
+                return Ok(Some(gitka_toml.to_string_lossy().to_string()));
+            }
+        }
+    }
+    if let Ok(entries) = std::fs::read_dir("/mnt") {
+        for entry in entries.flatten() {
+            let gitka_toml = entry.path().join(".gitka").join("gitka.toml");
+            if gitka_toml.exists() {
+                return Ok(Some(gitka_toml.to_string_lossy().to_string()));
+            }
+        }
+    }
+
+    Ok(None)
+}
+
 // ── Update ────────────────────────────────────────────────────────
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -499,6 +535,7 @@ pub fn run() {
             detect_usb_drives,
             check_drive,
             detect_repos_on_drive,
+            find_config,
             check_update,
             run_update,
         ])
