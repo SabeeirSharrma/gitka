@@ -216,6 +216,9 @@ pub enum Commands {
         source: Option<PathBuf>,
     },
 
+    /// Uninstall Gitka CLI and GUI binaries
+    Uninstall,
+
     /// Update Gitka CLI and GUI to the latest version
     Update {
         /// Only check for updates without installing
@@ -241,7 +244,8 @@ impl Commands {
             | Commands::Usb { .. }
             | Commands::Wipe { .. }
             | Commands::Auth { .. }
-            | Commands::Update { .. } => false,
+            | Commands::Update { .. }
+            | Commands::Uninstall => false,
             _ => true,
         }
     }

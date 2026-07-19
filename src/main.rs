@@ -110,6 +110,10 @@ fn main() -> anyhow::Result<()> {
             cmd_update(*check, *no_gui, *json)?;
             return Ok(());
         }
+        Commands::Uninstall => {
+            cmd_uninstall()?;
+            return Ok(());
+        }
         _ => unreachable!(),
     }
 
@@ -2786,6 +2790,63 @@ fn build_and_install_gui(build_dir: &Path, install_dir: &Path) -> Result<()> {
         }
     } else {
         println!("  ⚠ GUI binary not found at expected location");
+    }
+
+    Ok(())
+}
+
+/// Uninstall Gitka CLI and GUI binaries
+fn cmd_uninstall() -> Result<()> {
+    let current_exe = std::env::current_exe()
+        .map_err(|e| GitkaError::Config(format!("Cannot find current binary: {}", e)))?;
+    let install_dir = current_exe.parent()
+        .ok_or_else(|| GitkaError::Config("Cannot determine install directory".to_string()))?;
+
+    let mut removed = false;
+
+    // Remove CLI
+    let cli_path = install_dir.join(if cfg!(target_os = "windows") { "gitka.exe" } else { "gitka" });
+    if cli_path.exists() {
+        println!("Removing {}...", cli_path.display());
+        match std::fs::remove_file(&cli_path) {
+            Ok(_) => {
+                println!("  ✓ Removed {}", cli_path.display());
+                removed = true;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+                return Err(GitkaError::Config(format!(
+                    "Permission denied. Re-run with sudo:\n  sudo gitka uninstall"
+                )));
+            }
+            Err(e) => {
+                return Err(GitkaError::Config(format!("Failed to remove {}: {}", cli_path.display(), e)));
+            }
+        }
+    }
+
+    // Remove GUI
+    let gui_name = if cfg!(target_os = "windows") { "gitka-gui.exe" } else { "gitka-gui" };
+    let gui_path = install_dir.join(gui_name);
+    if gui_path.exists() {
+        println!("Removing {}...", gui_path.display());
+        match std::fs::remove_file(&gui_path) {
+            Ok(_) => {
+                println!("  ✓ Removed {}", gui_path.display());
+                removed = true;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+                println!("  ⚠ Permission denied removing {}. Re-run with sudo.", gui_path.display());
+            }
+            Err(e) => {
+                println!("  ⚠ Failed to remove {}: {}", gui_path.display(), e);
+            }
+        }
+    }
+
+    if !removed {
+        println!("No gitka binaries found in {}", install_dir.display());
+    } else {
+        println!("\n✓ Gitka uninstalled from {}", install_dir.display());
     }
 
     Ok(())

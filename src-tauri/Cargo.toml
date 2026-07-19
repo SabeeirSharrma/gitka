@@ -1,6 +1,6 @@
 [package]
 name = "gitka-gui"
-version = "0.6.0"
+version = "0.6.1"
 edition = "2021"
 description = "Gitka GUI — cross-platform dashboard for git repo backups"
 license = "GPL-3.0"
