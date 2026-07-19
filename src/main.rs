@@ -2666,6 +2666,32 @@ fn cmd_update(check_only: bool, no_gui: bool, json: bool) -> Result<()> {
 }
 
 /// Inner update logic — separated so build_dir cleanup always runs in caller
+/// Resolve the cargo binary path (handles sudo where PATH is stripped)
+fn resolve_cargo() -> Result<std::ffi::OsString> {
+    // Try which first
+    if let Ok(output) = std::process::Command::new("which").arg("cargo").output() {
+        if output.status.success() {
+            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !path.is_empty() {
+                return Ok(std::ffi::OsString::from(path));
+            }
+        }
+    }
+    // Fallback: check common locations
+    let home = dirs::home_dir().unwrap_or_default();
+    let candidates = [
+        home.join(".cargo/bin/cargo"),
+        std::path::PathBuf::from("/usr/local/bin/cargo"),
+        std::path::PathBuf::from("/usr/bin/cargo"),
+    ];
+    for c in &candidates {
+        if c.exists() {
+            return Ok(c.as_os_str().to_owned());
+        }
+    }
+    Ok(std::ffi::OsString::from("cargo"))
+}
+
 fn do_update(
     build_dir: &Path,
     repo_url: &str,
@@ -2686,7 +2712,8 @@ fn do_update(
 
     // Build CLI
     println!("  Building CLI...");
-    let cli_build = std::process::Command::new("cargo")
+    let cargo = resolve_cargo()?;
+    let cli_build = std::process::Command::new(&cargo)
         .args(["build", "--release", "--bin", "gitka"])
         .current_dir(build_dir)
         .status()
@@ -2732,14 +2759,14 @@ fn do_update(
         let tauri_dir = build_dir.join("src-tauri");
         if tauri_dir.exists() {
             // Try to install cargo-tauri if not present
-            let tauri_check = std::process::Command::new("cargo")
+            let tauri_check = std::process::Command::new(&cargo)
                 .args(["tauri", "--version"])
                 .current_dir(build_dir)
                 .status();
 
             if tauri_check.is_err() || !tauri_check.unwrap().success() {
                 println!("  Installing cargo-tauri...");
-                let install_tauri = std::process::Command::new("cargo")
+                let install_tauri = std::process::Command::new(&cargo)
                     .args(["install", "tauri-cli", "--locked"])
                     .status()
                     .map_err(|e| GitkaError::Config(format!("Failed to install tauri-cli: {}", e)))?;
@@ -2766,7 +2793,8 @@ fn do_update(
 
 /// Build and install the Tauri GUI binary
 fn build_and_install_gui(build_dir: &Path, install_dir: &Path) -> Result<()> {
-    let gui_build = std::process::Command::new("cargo")
+    let cargo = resolve_cargo()?;
+    let gui_build = std::process::Command::new(&cargo)
         .args(["tauri", "build"])
         .current_dir(build_dir.join("src-tauri"))
         .status()
