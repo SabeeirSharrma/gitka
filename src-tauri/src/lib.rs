@@ -23,6 +23,14 @@ pub struct GitkaConfig {
     pub content: String,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct UsbDrive {
+    pub path: String,
+    pub label: String,
+    pub size: String,
+    pub mountpoint: String,
+}
+
 // ── Helpers ───────────────────────────────────────────────────────
 
 fn gitka_cmd(args: &[&str]) -> Result<String, String> {
@@ -293,6 +301,68 @@ fn init_backup(
     gitka_cmd(&refs)
 }
 
+#[tauri::command]
+fn wipe_drive(
+    target: String,
+    source: String,
+    username: Option<String>,
+    token: Option<String>,
+    gitflare_url: Option<String>,
+    filesystem: Option<String>,
+    yes: bool,
+) -> Result<String, String> {
+    let mut owned: Vec<String> = Vec::new();
+    owned.push("wipe".into());
+    owned.push("--target".into());
+    owned.push(target);
+    owned.push("--source".into());
+    owned.push(source);
+
+    if let Some(u) = username {
+        owned.push("--username".into());
+        owned.push(u);
+    }
+    if let Some(t) = token {
+        owned.push("--token".into());
+        owned.push(t);
+    }
+    if let Some(g) = gitflare_url {
+        owned.push("--gitflare-url".into());
+        owned.push(g);
+    }
+    if let Some(f) = filesystem {
+        owned.push("--filesystem".into());
+        owned.push(f);
+    }
+    if yes {
+        owned.push("--yes".into());
+    }
+
+    let refs: Vec<&str> = owned.iter().map(|s| s.as_str()).collect();
+    gitka_cmd(&refs)
+}
+
+#[tauri::command]
+fn detect_usb_drives() -> Result<Vec<UsbDrive>, String> {
+    let output = gitka_cmd(&["usb"])?;
+
+    let mut drives = Vec::new();
+    for line in output.lines() {
+        // Parse usb output: path label size mountpoint
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() >= 2 && !parts[0].starts_with('-') && parts[0] != "Path" && parts[0] != "No" {
+            drives.push(UsbDrive {
+                path: parts[0].to_string(),
+                label: parts.get(1).unwrap_or(&"").to_string(),
+                size: parts.get(2).unwrap_or(&"unknown").to_string(),
+                mountpoint: parts.get(3).unwrap_or(&"").to_string(),
+            });
+        }
+    }
+
+    Ok(drives)
+}
+
 // ── Main ──────────────────────────────────────────────────────────
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -314,6 +384,8 @@ pub fn run() {
             import_repo,
             train_dict,
             init_backup,
+            wipe_drive,
+            detect_usb_drives,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

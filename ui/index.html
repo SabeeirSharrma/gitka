@@ -28,19 +28,31 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
         Repositories
       </button>
+      <button class="nav-btn" data-view="setup">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+        Setup
+      </button>
+      <button class="nav-btn" data-view="import">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+        Import
+      </button>
+      <button class="nav-btn" data-view="tools">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
+        Tools
+      </button>
       <button class="nav-btn" data-view="settings">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
         Settings
       </button>
     </nav>
     <div class="sidebar-footer">
-      <div class="version">v0.6.0</div>
+      <div class="version">v0.6.1</div>
     </div>
   </aside>
 
   <!-- Main content -->
   <main class="main">
-    <!-- Dashboard view -->
+    <!-- ═══ Dashboard ═══ -->
     <section id="view-dashboard" class="view active">
       <div class="view-header">
         <h2>Dashboard</h2>
@@ -55,55 +67,196 @@
           </button>
         </div>
       </div>
-
-      <!-- Stats cards -->
       <div class="stats-grid">
-        <div class="stat-card">
-          <div class="stat-value" id="stat-total">0</div>
-          <div class="stat-label">Total Repos</div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-value" id="stat-archived">0</div>
-          <div class="stat-label">Archived</div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-value" id="stat-extracted">0</div>
-          <div class="stat-label">Extracted</div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-value" id="stat-size">0 MB</div>
-          <div class="stat-label">Total Archive Size</div>
-        </div>
+        <div class="stat-card"><div class="stat-value" id="stat-total">0</div><div class="stat-label">Total Repos</div></div>
+        <div class="stat-card"><div class="stat-value" id="stat-archived">0</div><div class="stat-label">Archived</div></div>
+        <div class="stat-card"><div class="stat-value" id="stat-extracted">0</div><div class="stat-label">Extracted</div></div>
+        <div class="stat-card"><div class="stat-value" id="stat-size">0 MB</div><div class="stat-label">Total Archive Size</div></div>
       </div>
-
-      <!-- Repo list -->
       <div class="repo-list" id="dashboard-repos">
         <div class="empty-state">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
-          <p>No repositories found. Run <code>gitka scan</code> or import a repo.</p>
+          <p>No repositories found. Run Scan or set up a backup first.</p>
         </div>
       </div>
     </section>
 
-    <!-- Repos view -->
+    <!-- ═══ Repositories ═══ -->
     <section id="view-repos" class="view">
       <div class="view-header">
         <h2>Repositories</h2>
         <div class="header-actions">
-          <button class="btn btn-primary" id="btn-import">
+          <button class="btn btn-primary" id="btn-import-repos">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
             Import Repo
+          </button>
+          <button class="btn btn-secondary" id="btn-verify-all">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+            Verify All
           </button>
         </div>
       </div>
       <div class="repo-grid" id="repo-grid">
-        <div class="empty-state">
-          <p>No repositories to display.</p>
+        <div class="empty-state"><p>No repositories to display.</p></div>
+      </div>
+    </section>
+
+    <!-- ═══ Setup (init wizard) ═══ -->
+    <section id="view-setup" class="view">
+      <div class="view-header">
+        <h2>Setup Backup</h2>
+      </div>
+      <div class="settings-content">
+        <div class="setting-group">
+          <h3>Step 1 — Target Drive</h3>
+          <div class="setting-row">
+            <label>USB / Backup Drive</label>
+            <div style="display:flex;gap:8px;align-items:center;">
+              <select id="setup-drive" style="flex:1;"><option value="">— Detect drives first —</option></select>
+              <button class="btn btn-secondary btn-sm" id="btn-detect-drives">Detect</button>
+            </div>
+          </div>
+          <div class="setting-row">
+            <label>Or enter path manually</label>
+            <input type="text" id="setup-drive-manual" placeholder="/dev/sdb1 or /run/media/...">
+          </div>
+        </div>
+
+        <div class="setting-group">
+          <h3>Step 2 — Source</h3>
+          <div class="setting-row">
+            <label>Source Type</label>
+            <select id="setup-source">
+              <option value="github">GitHub</option>
+              <option value="gitflare">GitFlare</option>
+            </select>
+          </div>
+          <div class="setting-row" id="setup-github-fields">
+            <label>GitHub Username</label>
+            <input type="text" id="setup-username" placeholder="your-username">
+          </div>
+          <div class="setting-row" id="setup-gitflare-fields" style="display:none;">
+            <label>GitFlare URL</label>
+            <input type="text" id="setup-gitflare-url" placeholder="https://gitflare.example.com">
+          </div>
+          <div class="setting-row">
+            <label>Auth Token (optional)</label>
+            <input type="password" id="setup-token" placeholder="ghp_xxx">
+          </div>
+        </div>
+
+        <div class="setting-group">
+          <h3>Step 3 — Options</h3>
+          <div class="setting-row">
+            <label>Volume Split Size (MB)</label>
+            <input type="number" id="setup-volume-size" value="0" min="0" placeholder="0 = off">
+          </div>
+          <div class="setting-row">
+            <label>Enable Deduplication</label>
+            <label class="toggle">
+              <input type="checkbox" id="setup-dedup" checked>
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
+        </div>
+
+        <div class="setting-actions">
+          <button class="btn btn-primary" id="btn-setup-init">Initialize Backup</button>
         </div>
       </div>
     </section>
 
-    <!-- Settings view -->
+    <!-- ═══ Import ═══ -->
+    <section id="view-import" class="view">
+      <div class="view-header">
+        <h2>Import Repository</h2>
+      </div>
+      <div class="settings-content">
+        <div class="setting-group">
+          <h3>Import a local git repository into the backup</h3>
+          <div class="setting-row">
+            <label>Repository Path</label>
+            <input type="text" id="import-path" placeholder="/path/to/my/repo">
+          </div>
+          <div class="setting-row">
+            <label>Name (optional)</label>
+            <input type="text" id="import-name" placeholder="defaults to directory name">
+          </div>
+        </div>
+        <div class="setting-actions">
+          <button class="btn btn-primary" id="btn-do-import">Import Repository</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══ Tools ═══ -->
+    <section id="view-tools" class="view">
+      <div class="view-header">
+        <h2>Tools</h2>
+      </div>
+      <div class="settings-content">
+        <div class="tool-card">
+          <h3>Train Dictionary</h3>
+          <p>Train a zstd dictionary from archived repos to improve compression of small files.</p>
+          <div class="setting-row">
+            <label>Source Directory (optional)</label>
+            <input type="text" id="train-source" placeholder="leave empty for all repos">
+          </div>
+          <div class="setting-actions">
+            <button class="btn btn-primary" id="btn-train-dict">Train Dictionary</button>
+          </div>
+        </div>
+
+        <div class="tool-card danger-zone">
+          <h3>Wipe Drive</h3>
+          <p>Erase all data on a removable drive and set up Gitka from scratch. This is irreversible.</p>
+          <div class="setting-row">
+            <label>Target Drive</label>
+            <div style="display:flex;gap:8px;align-items:center;">
+              <select id="wipe-drive" style="flex:1;"><option value="">— Detect drives first —</option></select>
+              <button class="btn btn-secondary btn-sm" id="btn-detect-drives-wipe">Detect</button>
+            </div>
+          </div>
+          <div class="setting-row">
+            <label>Or enter path manually</label>
+            <input type="text" id="wipe-drive-manual" placeholder="/dev/sdb1">
+          </div>
+          <div class="setting-row">
+            <label>Source Type</label>
+            <select id="wipe-source">
+              <option value="github">GitHub</option>
+              <option value="gitflare">GitFlare</option>
+            </select>
+          </div>
+          <div class="setting-row" id="wipe-github-fields">
+            <label>GitHub Username</label>
+            <input type="text" id="wipe-username" placeholder="your-username">
+          </div>
+          <div class="setting-row" id="wipe-gitflare-fields" style="display:none;">
+            <label>GitFlare URL</label>
+            <input type="text" id="wipe-gitflare-url" placeholder="https://gitflare.example.com">
+          </div>
+          <div class="setting-row">
+            <label>Auth Token (optional)</label>
+            <input type="password" id="wipe-token" placeholder="ghp_xxx">
+          </div>
+          <div class="setting-row">
+            <label>Filesystem</label>
+            <select id="wipe-filesystem">
+              <option value="">Auto-detect</option>
+              <option value="ext4">ext4</option>
+              <option value="vfat">FAT32</option>
+              <option value="ntfs">NTFS</option>
+            </select>
+          </div>
+          <div class="setting-actions">
+            <button class="btn btn-danger" id="btn-wipe-drive">Wipe &amp; Setup Drive</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══ Settings ═══ -->
     <section id="view-settings" class="view">
       <div class="view-header">
         <h2>Settings</h2>
@@ -120,7 +273,6 @@
             <input type="password" id="cfg-auth-token" placeholder="ghp_xxx (optional)">
           </div>
         </div>
-
         <div class="setting-group">
           <h3>Compression</h3>
           <div class="setting-row">
@@ -156,7 +308,6 @@
             </label>
           </div>
         </div>
-
         <div class="setting-group">
           <h3>Features</h3>
           <div class="setting-row">
@@ -188,7 +339,6 @@
             </label>
           </div>
         </div>
-
         <div class="setting-group">
           <h3>Extraction</h3>
           <div class="setting-row">
@@ -199,7 +349,6 @@
             </select>
           </div>
         </div>
-
         <div class="setting-actions">
           <button class="btn btn-primary" id="btn-save-settings">Save Settings</button>
         </div>

@@ -2,19 +2,19 @@
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 :root {
-  --bg:          #0f1117;
-  --bg-surface:  #161822;
-  --bg-card:     #1c1f2e;
-  --bg-hover:    #252840;
-  --border:      #2a2d3e;
-  --text:        #e4e4e7;
-  --text-dim:    #8b8d98;
-  --accent:      #6c5ce7;
-  --accent-hover:#7d6ff0;
+  --bg:          #140800;
+  --bg-surface:  #0f0600;
+  --bg-card:     #1e0d00;
+  --bg-hover:    #2e1200;
+  --border:      #421a00;
+  --text:        #ffe6d4;
+  --text-dim:    #cc7a33;
+  --accent:      #f48c06;
+  --accent-hover:#ffba08;
   --green:       #00b894;
-  --yellow:      #fdcb6e;
-  --red:         #e17055;
-  --blue:        #74b9ff;
+  --yellow:      #ffba08;
+  --red:         #e85d04;
+  --blue:        #f48c06;
   --radius:      8px;
   --sidebar-w:   220px;
 }
@@ -225,8 +225,8 @@ body {
   letter-spacing: 0.3px;
 }
 
-.state-archived  { background: #1a2332; color: var(--blue); }
-.state-extracted { background: #1a2e1a; color: var(--green); }
+.state-archived  { background: #2e1200; color: var(--accent); }
+.state-extracted { background: #0a2e1a; color: #00d4aa; }
 .state-served    { background: #2e2a1a; color: var(--yellow); }
 
 .repo-size {
@@ -320,6 +320,47 @@ body {
 .setting-row input:focus,
 .setting-row select:focus {
   border-color: var(--accent);
+}
+
+/* ── Tool cards ────────────────────────────────────────────────── */
+.tool-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.tool-card h3 {
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.tool-card p {
+  font-size: 13px;
+  color: var(--text-dim);
+  line-height: 1.5;
+}
+
+.tool-card .setting-row {
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+}
+
+.tool-card .setting-actions {
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+}
+
+.tool-card.danger-zone {
+  border-color: var(--red);
+  background: rgba(232, 93, 4, 0.05);
+}
+
+.tool-card.danger-zone h3 {
+  color: var(--red);
 }
 
 /* Toggle switch */
